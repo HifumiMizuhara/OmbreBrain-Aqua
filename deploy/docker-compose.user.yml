@@ -1,5 +1,5 @@
-# Ombre Brain — 用户自部署
-# 直接拉取 Docker Hub 镜像，不需要源码
+# Ombre Brain Aqua — 用户自部署
+# 直接拉取 Aqua 预构建镜像，不需要源码
 #
 # 默认（云端向量化 / 或暂不开向量化）：
 #   docker compose -f docker-compose.user.yml up -d
@@ -24,7 +24,7 @@
 
 services:
   ombre-brain:
-    image: p0luz/ombre-brain:latest
+    image: ghcr.io/hifumimizuhara/ombrebrain-aqua:latest
     container_name: ombre-brain
     restart: unless-stopped
     ports:

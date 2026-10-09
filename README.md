@@ -170,21 +170,29 @@ Dashboard 上，`You` 只有一枚总开关，认识、证据、历史一概不�
 | **Windows** | `Win + R` → 输入 `cmd` → 回车 |
 | **Linux** | `Ctrl + Alt + T` |
 
-### 第二步：创建工作文件夹
+### 第二步：获取部署文件并启动
+
+**不需要提前准备 API Key**——Ombre Brain Aqua 支持零配置启动，API Key 可以在 Dashboard 里随时填入并立即生效。
+
+#### 方式 A：源码克隆构建（推荐 · 100% 完整运行 Aqua 最新特性）
+
+```bash
+git clone https://github.com/HifumiMizuhara/OmbreBrain-Aqua.git
+cd OmbreBrain-Aqua
+
+# 本地构建镜像并启动
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+#### 方式 B：单文件免源码部署（拉取 Aqua 预构建镜像）
 
 ```bash
 mkdir ombre-brain && cd ombre-brain
-```
 
-### 第三步：下载 compose 文件并启动
+# 下载 Aqua 用户版 compose 文件
+curl -O https://raw.githubusercontent.com/HifumiMizuhara/OmbreBrain-Aqua/main/deploy/docker-compose.user.yml
 
-**不需要提前准备 API Key**——Ombre Brain 支持零配置启动，API Key 可以在 Dashboard 里随时填入并立即生效。
-
-```bash
-# 下载用户版 compose 文件
-curl -O https://raw.githubusercontent.com/P0luz/Ombre-Brain/main/deploy/docker-compose.user.yml
-
-# 拉取镜像并启动（第一次会下载约 500MB）
+# 拉取镜像并启动
 docker compose -f docker-compose.user.yml up -d
 ```
 
@@ -396,7 +404,7 @@ mcp_require_auth: false
 2.8.12–2.11.0 在非回环或无法确认的云环境中会把明确的 `false` 在内存中强制改回鉴权，表现为配置已关闭但 `/mcp` 仍返回 `401`、部分客户端报告 `MCP error 32003`。升级到 2.11.1+ 并重启即可；持久记忆卷不受影响：
 
 ```bash
-curl -O https://raw.githubusercontent.com/P0luz/Ombre-Brain/main/deploy/docker-compose.user.yml
+curl -O https://raw.githubusercontent.com/HifumiMizuhara/OmbreBrain-Aqua/main/deploy/docker-compose.user.yml
 docker compose -f docker-compose.user.yml up -d --force-recreate
 ```
 
@@ -481,9 +489,9 @@ Ombre-MCP-Token: 你的Token
 适合想自己改代码或部署到 VPS 的用户。
 
 ```bash
-git clone https://github.com/P0luz/Ombre-Brain.git
-cd Ombre-Brain
-docker compose -f deploy/docker-compose.yml up -d
+git clone https://github.com/HifumiMizuhara/OmbreBrain-Aqua.git
+cd OmbreBrain-Aqua
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 验证：
@@ -522,8 +530,8 @@ location / {
 ### 不用 Docker（纯 Python）
 
 ```bash
-git clone https://github.com/P0luz/Ombre-Brain.git
-cd Ombre-Brain
+git clone https://github.com/HifumiMizuhara/OmbreBrain-Aqua.git
+cd OmbreBrain-Aqua
 
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -636,7 +644,7 @@ OMBRE_OWNER_COUNT = 2                  # 所有人填相同的总人数
 
 ### Render
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/P0luz/Ombre-Brain)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/HifumiMizuhara/OmbreBrain-Aqua)
 
 > ⚠️ **免费层不可用**：Render 免费层无持久化磁盘，重启后记忆会丢失，且无流量时会休眠。**必须使用 Starter（$7/mo）或以上**。
 
@@ -671,8 +679,8 @@ OB 已支持标准 `X-Forwarded-Proto` / `X-Forwarded-Host`，但为防止客户
 ### 自有 VPS
 
 ```bash
-git clone https://github.com/P0luz/Ombre-Brain.git
-cd Ombre-Brain
+git clone https://github.com/HifumiMizuhara/OmbreBrain-Aqua.git
+cd OmbreBrain-Aqua
 cp config.example.yaml config.yaml
 # 修改 config.yaml 设置 API key 和其他参数
 docker compose -f deploy/docker-compose.yml up -d
@@ -808,24 +816,20 @@ OMBRE_HOST_VAULT_DIR=/Users/你的用户名/Documents/Obsidian Vault/Ombre Brain
 
 ## 更新 / How to Update
 
-### Docker Hub 镜像用户
+### 方式 A：预构建镜像用户 (GHCR)
 
 ```bash
-docker pull p0luz/ombre-brain:latest
+docker pull ghcr.io/hifumimizuhara/ombrebrain-aqua:latest
 docker compose -f docker-compose.user.yml down
 docker compose -f docker-compose.user.yml up -d
 ```
 
-首次从 v2.8.11 或更早版本升级到 v2.8.12+，且曾关闭 MCP 鉴权的 Docker 用户，还需同步新版 Compose 并执行 `--force-recreate`，详见[“仅本机回环免鉴权”的旧版迁移说明](#方式三仅本机回环免鉴权高级)。若你的 Compose 做过自定义，请手工合并新版的 `OMBRE_BIND_ADDRESS` 与 `OMBRE_ALLOW_INSECURE_MCP` 环境项，不要直接覆盖自定义文件。
-
-### 从源码部署用户
+### 方式 B：从源码部署用户（推荐）
 
 ```bash
-cd Ombre-Brain
+cd OmbreBrain-Aqua
 git pull origin main
-docker compose -f deploy/docker-compose.yml down
-docker compose -f deploy/docker-compose.yml build
-docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 记忆数据在 volume 里，更新不会丢失。
