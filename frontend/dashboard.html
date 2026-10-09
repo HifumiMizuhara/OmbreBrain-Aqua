@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="referrer" content="no-referrer">
-<title>Ombre Brain</title>
+<title>Ombre Brain Aqua</title>
 <meta name="theme-color" content="#B85C3C">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/icon.svg">
@@ -2111,7 +2111,7 @@
 <div class="header">
   <h1>
     <img class="ob-logo" src="/static/icon.svg" alt="OB" />
-    Ombre Brain<span class="version-badge" id="version-badge"></span>
+    Ombre Brain <span class="aqua-badge" style="display:inline-block;font-size:12px;font-weight:700;color:#0284c7;background:rgba(2,132,199,0.1);border:1px solid rgba(2,132,199,0.25);border-radius:4px;padding:1px 6px;margin-left:4px;vertical-align:middle;letter-spacing:0.5px;">Aqua</span><span class="version-badge" id="version-badge"></span>
   </h1>
   <div class="header-meta">
     <!-- 记忆归属徽标：多人共用一套 OB 时（owner_count>=2）显示「这份记忆是谁的」，单人隐藏。
@@ -8349,7 +8349,7 @@ async function loadVersionBadge() {
     _obLocalVersion = d.version || null;
     const el = document.getElementById('version-badge');
     if (el && d.version) el.textContent = 'v' + d.version;
-    document.title = 'Ombre Brain · v' + (d.version || '');
+    document.title = 'Ombre Brain Aqua · v' + (d.version || '');
     // 同步填入版本面板
     const vl = document.getElementById('ver-local-disp');
     if (vl && d.version) vl.textContent = 'v' + d.version;

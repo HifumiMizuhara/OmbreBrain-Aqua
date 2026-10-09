@@ -20,6 +20,12 @@ Ombre Brain 不是一个人做出来的。
 
 ---
 
+## Fork 分支维护 (Ombre Brain Aqua)
+
+- **Hifumi Mizuhara** — 分支发起与维护（情景浮现 episodic surfacing、You/Them/I 门禁放宽、Antigravity MCP 协议与提示词工程等）
+
+---
+
 ## 还有
 
 用过它、提过 bug、说过「这里我看不懂」的每一个人。

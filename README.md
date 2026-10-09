@@ -1,12 +1,17 @@
-感谢开发组成员：Poluz、江乔生、Iris Wang、Moling、Wudy、KittyXu、万世、Zoey、昕（见 [AUTHORS.md](AUTHORS.md)）
+感谢原版开发组成员：Poluz、江乔生、Iris Wang、Moling、Wudy、KittyXu、万世、Zoey、昕（见 [AUTHORS.md](AUTHORS.md)）
 
-# Ombre Brain
+# Ombre Brain Aqua 🌊
 
-一个给 Claude（或其它 MCP 客户端）用的长期情绪记忆系统。基于 Russell 效价/唤醒度坐标打标，Obsidian 做存储层，MCP 接入，带遗忘曲线和向量语义检索。
+> 本项目是 [Ombre Brain](https://github.com/P0luz/Ombre-Brain) 的衍生分支 (Fork)，仓库名为 **[OmbreBrain-Aqua](https://github.com/HifumiMizuhara/OmbreBrain-Aqua)**，由 **Hifumi Mizuhara** 维护与开发。
+> 延续原版带情感坐标与遗忘曲线的长期记忆哲学，增强了分层情景浮现（Episodic Surfacing）、You/Them/I 认知门禁体验以及 Google Antigravity 原生 MCP 协议支持。
 
-A long-term emotional memory system for Claude (and any MCP client). Tags memories using Russell's valence/arousal coordinates, stores them as Obsidian-compatible Markdown, connects via MCP, with forgetting curve and vector semantic search.
+一个给 Claude、Google Antigravity（及任何 MCP 客户端）用的长期情绪记忆系统。基于 Russell 效价/唤醒度坐标打标，Obsidian 做存储层，MCP 接入，带遗忘曲线和向量语义检索。
 
-> **开发者文档**：架构 / API / 配置细节请见 [docs/INTERNALS.md](docs/INTERNALS.md)。本 README 只关心『怎么把它跑起来用上』。
+A long-term emotional memory system for Claude, Google Antigravity, and any MCP client. Forked from [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) as **Ombre Brain Aqua**, maintained by **Hifumi Mizuhara**. Tags memories using Russell's valence/arousal coordinates, stores them as Obsidian-compatible Markdown, connects via MCP, with forgetting curve and vector semantic search.
+
+> **提示词指南**：Claude 端使用约定见 [docs/CLAUDE_PROMPT.md](docs/CLAUDE_PROMPT.md)；Google Antigravity 专用 MCP 指令见 [docs/ANTIGRAVITY_PROMPT.md](docs/ANTIGRAVITY_PROMPT.md)。
+>
+> **开发者文档**：架构 / API / 配置细节请见 [docs/INTERNALS.md](docs/INTERNALS.md)。
 >
 > **更新日志**：每个版本「修了什么」见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -33,6 +38,9 @@ Ombre Brain gives it persistent memory — not cold key-value storage, but a sys
 - **可验证备份与恢复**：本地导出使用 SQLite 一致性快照，并把记忆桶与隐藏原文证据一起写入逐文件 SHA-256 清单；导入前先检查路径、体积、重复项和完整性，损坏包不会部分恢复
 - **历史对话导入**：批量导入 Claude / ChatGPT / DeepSeek 历史对话，超长单轮无损分块并支持断点续传；导入桶独立新建、标注“被导入”，创建与衰减日期取导入日
 - **Dashboard**：内置 Web 管理面板，密码保护，桶列表 / 检索调试 / 记忆网络 / 配置管理
+- **分层情景浮现 (Episodic Surfacing · Aqua 特性)**：无参 `breath()` 呈现 7 大结构化章节（核心准则、核心认知、活跃待办、接上次、今天、挂在心上、忽然想起），清晰度分级与主题簇去重
+- **双向认知沉淀 (You & I · Aqua 增强)**：支持记录对用户的长期认知（`You`），以及经过 dream 见证逐步晋升的自我认知（`I`）
+- **多平台 MCP 指南 (Aqua 特性)**：同时原生支持 Claude 客户端直接调用与 Google Antigravity `call_mcp_tool` 协议规范
 - **Cloudflare Tunnel 一键管理**：Dashboard 内置 Tunnel 连接器，无需命令行即可开启公网访问
 - **OAuth 2.1 远程鉴权**：通过 HTTPS 连接时自动触发 OAuth 流程，Claude.ai 网页版和 Claude Code 均支持
 
@@ -905,14 +913,13 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ## License
 
-[MIT](LICENSE)
+本项目延续使用 [MIT License](LICENSE)。
 
-用、改、分发、商用、闭源、拿去卖，都可以，不用问我们。唯一的硬性要求是保留 `LICENSE` 里的版权声明。
+- 原版版权所有：Copyright (c) 2026 P0lar1zzZ ([Original Ombre Brain](https://github.com/P0luz/Ombre-Brain))
+- 分支版权所有：Copyright (c) 2026 Hifumi Mizuhara ([OmbreBrain-Aqua](https://github.com/HifumiMizuhara/OmbreBrain-Aqua))
 
-另有一份 [NOTICE.md](NOTICE.md)，是关于署名和「如果你拿它做记忆服务」的一点请求。
-**那不是条款，没有约束力**，MIT 说了算。写在那里只是想把为什么说清楚。
-
-写过代码的人见 [AUTHORS.md](AUTHORS.md)。
+自由使用、修改与分发，唯一的硬性要求是保留 `LICENSE` 中的版权声明。
+写过代码的人与贡献者见 [AUTHORS.md](AUTHORS.md)。另可参阅 [NOTICE.md](NOTICE.md) 关于署名与记忆服务的一点请求。
 
 ---
 
