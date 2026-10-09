@@ -79,18 +79,26 @@
     font-weight: 600;
     color: var(--accent);
     letter-spacing: 0.5px;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .header .stats {
     font-size: 12px;
     color: var(--text-dim);
     font-weight: 300;
     letter-spacing: 0.3px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .header-meta {
     display: flex;
     align-items: center;
     gap: 10px;
     font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .header-actions {
     display: flex;
@@ -184,6 +192,25 @@
     margin-left: 6px;
     letter-spacing: 0.5px;
     font-style: italic;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .aqua-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #0284c7;
+    background: rgba(2, 132, 199, 0.12);
+    border: 1px solid rgba(2, 132, 199, 0.28);
+    border-radius: 4px;
+    padding: 0 5px;
+    margin-left: 6px;
+    letter-spacing: 0.5px;
+    line-height: 18px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    vertical-align: middle;
   }
 
   .content { padding: 32px 40px; }
@@ -833,8 +860,16 @@
     letter-spacing: 1.5px;
     text-transform: uppercase;
     font-size: 19px;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
-  .header .version-badge, .header .stats { font-family:'Share Tech Mono',monospace; }
+  .header .version-badge, .header .stats {
+    font-family:'Share Tech Mono',monospace;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
   /* 顶栏里的小圆/小方按钮 → 凸起实体键 */
   .header button, .search-bar input {
     border: none !important;
@@ -846,7 +881,11 @@
   .header button:hover { color: var(--accent) !important; transform: translateY(-1px); }
   .header button:active { transform: translateY(1px); box-shadow: inset 3px 3px 6px var(--shadow-dark-subtle), inset -2px -2px 5px var(--shadow-light) !important; }
   .search-bar input { box-shadow: inset 3px 3px 7px var(--shadow-dark-subtle), inset -3px -3px 6px var(--shadow-light) !important; }
-  #heartbeat-indicator, #anchor-counter { font-family:'Share Tech Mono',monospace; }
+  #heartbeat-indicator, #anchor-counter {
+    font-family:'Share Tech Mono',monospace;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 
   /* ============ 标签页 → 内凹托盘里的一排实体键帽（keycap selector） ============ */
   .tabs {
@@ -2005,14 +2044,18 @@
       grid-area: title;
       min-width: max-content;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
     }
     .header-meta {
       grid-area: meta;
       min-width: 0;
       justify-content: flex-end;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      white-space: nowrap;
     }
-    .header .stats { white-space: nowrap; }
+    .header .stats { white-space: nowrap; flex-shrink: 0; }
+    #heartbeat-indicator, #anchor-counter { white-space: nowrap; flex-shrink: 0; }
     .search-bar {
       grid-area: search;
       width: 100%;
@@ -2111,7 +2154,7 @@
 <div class="header">
   <h1>
     <img class="ob-logo" src="/static/icon.svg" alt="OB" />
-    Ombre Brain <span class="aqua-badge" style="display:inline-block;font-size:12px;font-weight:700;color:#0284c7;background:rgba(2,132,199,0.1);border:1px solid rgba(2,132,199,0.25);border-radius:4px;padding:1px 6px;margin-left:4px;vertical-align:middle;letter-spacing:0.5px;">Aqua</span><span class="version-badge" id="version-badge"></span>
+    Ombre Brain <span class="aqua-badge">Aqua</span><span class="version-badge" id="version-badge"></span>
   </h1>
   <div class="header-meta">
     <!-- 记忆归属徽标：多人共用一套 OB 时（owner_count>=2）显示「这份记忆是谁的」，单人隐藏。
