@@ -42,6 +42,7 @@ from ombrebrain.storage.quote_store import quotes_from_metadata, render_quotes
 from ._date_range import bucket_in_created_range, parse_created_range
 from ._shared import bucket_has_tags, footprint_reader
 from ._verbatim import render_stored_bucket
+from .._implicit import reinforce_search_hits
 from utils import count_tokens_approx, parse_bool
 
 _SURFACE_POLICY = SurfacePolicyVM.default()
@@ -373,6 +374,7 @@ async def surface_search(
     )
 
     results = []
+    returned_ids: list[str] = []
     token_used = 0
     budget_blocked = False
     for bucket in matches:
@@ -417,6 +419,13 @@ async def surface_search(
             break
         results.append(rendered)
         token_used += entry_tokens
+        if not _is_archived(bucket):
+            returned_ids.append(bucket_id)
+
+    # --- 3.8.0：主动检索命中轻微强化（仅 manual、仅真实返回的前 N 条、不含 archive）。
+    # 无参浮现与 mode="automatic" 仍然完全只读；节流在 soft_reinforce（每桶每天一次）。
+    if call_mode != "automatic" and returned_ids:
+        await reinforce_search_hits(returned_ids)
 
     # --- 3.6.0：检索不再强化。retrieval ≠ reinforcement ---
     #

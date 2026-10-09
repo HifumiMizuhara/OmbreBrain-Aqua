@@ -28,6 +28,7 @@ tools/hold/feel.py — hold(feel=True) 分支
 from datetime import datetime
 
 from .. import _runtime as rt
+from .._implicit import reinforce_reference
 
 
 def _build_feel_id(valence: float) -> str:
@@ -84,6 +85,8 @@ async def store_feel(
             if 0 <= valence <= 1:
                 update_kwargs["model_valence"] = feel_valence
             await rt.bucket_mgr.update(source_bucket.strip(), **update_kwargs)
+            # 3.8.0: 显式引用旧桶是「引用」信号，轻微强化被引用的那一条。
+            await reinforce_reference(source_bucket.strip())
         except Exception as e:
             rt.logger.warning(f"Failed to mark source as digested / 标记已消化失败: {e}")
     return f"🫧feel→{bucket_id}"

@@ -49,6 +49,7 @@ from deletion_requests import DeletionRequestStore
 from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
+from ombrebrain.protocol.instructions import MCP_INSTRUCTIONS
 from ombrebrain.storage.embedding_outbox import EmbeddingOutbox
 from ombrebrain.storage.source_store import SourceStore
 from ombrebrain.them import ThemService, ThemStore, ThemToolGate
@@ -371,6 +372,7 @@ async def _stdio_lifespan(_server):
 
 mcp = FastMCP(
     "Ombre Brain",
+    instructions=MCP_INSTRUCTIONS,
     host=_BIND_HOST,
     port=OMBRE_PORT,
     json_response=True,

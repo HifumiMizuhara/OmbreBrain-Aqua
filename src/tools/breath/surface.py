@@ -32,6 +32,7 @@ tools/breath/surface.py — 无 query 浮现模式
 """
 
 import random
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -42,6 +43,7 @@ from utils import parse_bool, parse_iso_datetime
 from ._date_range import bucket_in_created_range
 from ._shared import bucket_has_tags, footprint_reader, render_within_budget
 from ._verbatim import render_stored_bucket
+from .today import render_today, today_config
 
 # U-07 fix: throttle the sampling-fallback INFO log to once per 5 minutes.
 # 库小且 sampling=ON 时此分支每次 breath 都触发，原本会刷屏；改为 ≥300s
@@ -59,6 +61,11 @@ _BREATH_SAFETY_CAP = 40_000
 # 3.6.0 新近性配额：浮现区预留几个位置给近 N 天创建的桶。见 _apply_recency_quota。
 _RECENT_SLOTS_DEFAULT = 3
 _RECENT_WINDOW_DAYS = 7
+# 3.6.15 近 24 小时子配额：见 _apply_today_quota。
+_TODAY_SLOTS_DEFAULT = 2
+_TODAY_WINDOW_HOURS = 24
+# 3.6.15 冷启动窗口：只有该天数内创建的桶才算「重要但还没被读过的新记忆」。
+_COLD_START_WINDOW_DAYS_DEFAULT = 7
 # 3.6.0 久未浮现的新桶护栏：见 passive association 段。
 _PASSIVE_MIN_AGE_HOURS = 24
 _PIN_BUDGET_NOTICE = (
@@ -166,9 +173,57 @@ def _apply_recency_quota(
         f"recency quota: {len(picks)} recent bucket(s) reserved "
         f"(window={_RECENT_WINDOW_DAYS}d, slots={slots}, shortfall={shortfall})"
     )
-    # 放在权重榜之后：头版仍然是权重最高的那条，新桶紧随其后，
-    # 而不是反过来把最重要的挤到看不见的地方。
-    return rest[:max_results - len(picks)] + picks
+    # 头版仍然是权重最高的那条，预留的近期桶紧随其后。曾经放在队尾，但渲染循环
+    # 按顺序消耗 token 预算，排在队尾等于预算紧张时最先被丢掉（3.6.15）。
+    return rest[:1] + picks + rest[1:max_results - len(picks)]
+
+
+def _apply_today_quota(
+    candidates: list[dict],
+    unresolved: list[dict],
+    max_results: int,
+    surfacing_cfg: dict,
+) -> list[dict]:
+    """保证最近 24 小时创建的桶至少有 today_min_slots 条在浮现区（3.6.15）。
+
+    7 天配额只在「近期桶不足 3 条」时补位；当天凌晨连写 20 条长谈后，近 7 天的
+    桶已经占满前列，配额判定「已够」，当天另一件独立的小事照样被挤出去。
+    这里把窗口收窄到 24 小时再保一次。`surfacing.today_min_slots = 0` 关闭。
+    """
+    try:
+        slots = int(surfacing_cfg.get("today_min_slots", _TODAY_SLOTS_DEFAULT))
+    except (TypeError, ValueError):
+        slots = _TODAY_SLOTS_DEFAULT
+    if slots <= 0 or max_results <= 0 or not candidates:
+        return candidates
+    slots = min(slots, max(1, max_results // 2))
+
+    cutoff = datetime.now() - timedelta(hours=_TODAY_WINDOW_HOURS)
+
+    def _is_today(bucket: dict) -> bool:
+        created = _created_at(bucket)
+        return created is not None and created >= cutoff
+
+    today = [b for b in unresolved if _is_today(b)]
+    if not today:
+        return candidates
+    head = candidates[:max_results]
+    shortfall = min(slots, len(today)) - sum(1 for b in head if _is_today(b))
+    if shortfall <= 0:
+        return candidates
+
+    today.sort(key=lambda b: _created_at(b) or datetime.min, reverse=True)
+    head_ids = {b["id"] for b in head}
+    picks = [b for b in today if b["id"] not in head_ids][:shortfall]
+    if not picks:
+        return candidates
+    pick_ids = {b["id"] for b in picks}
+    rest = [b for b in candidates if b["id"] not in pick_ids]
+    rt.logger.info(
+        f"today quota: {len(picks)} bucket(s) from last "
+        f"{_TODAY_WINDOW_HOURS}h reserved (slots={slots})"
+    )
+    return rest[:1] + picks + rest[1:max_results - len(picks)]
 
 
 async def surface_plans(max_tokens: int) -> str:
@@ -209,7 +264,7 @@ async def surface_plans(max_tokens: int) -> str:
         return "读取 plan 失败。"
 
 
-async def surface_default(
+async def _surface_classic(
     max_results: int,
     max_tokens: int,
     tag_filter: list,
@@ -294,6 +349,33 @@ async def surface_default(
         and bucket_has_tags(b["metadata"], tag_filter)
     ]
 
+    # --- 3.7.0 今天通道：近 window_hours 小时写下的事必然在场，不论 resolved 与权重 ---
+    today_results: list[str] = []
+    today_shown: set[str] = set()
+    today_omitted = 0
+    today_cfg = today_config(surfacing_cfg)
+    if today_cfg["enabled"]:
+        try:
+            today_pool = [
+                b for b in all_buckets_non_anchor
+                if _can_surface(b)
+                and b["metadata"].get("type", "dynamic") == "dynamic"
+                and not is_letter_bucket(b)
+                and not b["metadata"].get("pinned", False)
+                and not parse_bool(b["metadata"].get("protected"), default=False)
+                and not b["metadata"].get("dont_surface", False)
+                and bucket_has_tags(b["metadata"], tag_filter)
+            ]
+            today_results, today_shown, used, today_omitted = render_today(
+                today_pool, today_cfg, token_budget, _footprint
+            )
+            token_budget -= used
+            # 去重：已在「今天」段的桶不再进普通浮现。
+            unresolved = [b for b in unresolved if b["id"] not in today_shown]
+        except Exception as e:
+            rt.logger.warning(f"today channel failed / 今天通道异常: {e}")
+            today_results, today_shown = [], set()
+
     rt.logger.info(
         f"Breath surfacing: {len(all_buckets)} total, "
         f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved"
@@ -331,11 +413,32 @@ async def surface_default(
         rt.logger.info(f"Top unresolved scores: {top_scores}")
 
     # --- 冷启动检测 ---
-    cold_start = [
-        b for b in unresolved
-        if int(b["metadata"].get("activation_count") or 0) == 0
-        and int(b["metadata"].get("importance") or 0) >= 8
-    ][:2]
+    try:
+        cold_window = int(surfacing_cfg.get(
+            "cold_start_window_days", _COLD_START_WINDOW_DAYS_DEFAULT))
+    except (TypeError, ValueError):
+        cold_window = _COLD_START_WINDOW_DAYS_DEFAULT
+    cold_cutoff = (
+        datetime.now() - timedelta(days=cold_window) if cold_window > 0 else None
+    )
+
+    def _cold_in_window(b: dict) -> bool:
+        if cold_cutoff is None:
+            return True
+        created = _created_at(b)
+        return created is not None and created >= cold_cutoff
+
+    # 由数据决定而不是列表顺序：按 created 倒序取前 2。
+    cold_start = sorted(
+        (
+            b for b in unresolved
+            if int(b["metadata"].get("activation_count") or 0) == 0
+            and int(b["metadata"].get("importance") or 0) >= 8
+            and _cold_in_window(b)
+        ),
+        key=lambda b: (_created_at(b) or datetime.min, b["id"]),
+        reverse=True,
+    )[:2]
     cold_start_ids = {b["id"] for b in cold_start}
     scored_deduped = [b for b in scored if b["id"] not in cold_start_ids]
     scored_with_cold = cold_start + scored_deduped
@@ -394,6 +497,9 @@ async def surface_default(
     candidates = _apply_recency_quota(
         candidates, unresolved, max_results, surfacing_cfg
     )
+    candidates = _apply_today_quota(
+        candidates, unresolved, max_results, surfacing_cfg
+    )
     candidates = candidates[:max_results]
 
     dynamic_results = []
@@ -420,7 +526,7 @@ async def surface_default(
             rt.logger.warning(f"Failed to render surfaced bucket / 浮现渲染失败: {e}")
             continue
 
-    if not pinned_results and not dynamic_results:
+    if not pinned_results and not dynamic_results and not today_results:
         if pinned_omitted:
             return _pin_budget_notice(
                 required=pinned_required_tokens,
@@ -516,6 +622,7 @@ async def surface_default(
                 if _can_surface(b)
                 and b["metadata"].get("resolved", False)
                 and b["id"] not in shown_ids
+                and b["id"] not in today_shown
                 and not is_letter_bucket(b)
                 and b["metadata"].get("type") not in ("feel", "plan", "letter")
                 and not b["metadata"].get("pinned")
@@ -547,6 +654,11 @@ async def surface_default(
         parts.append(core_filter_notice)
     if pinned_results:
         parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
+    if today_results:
+        header = "=== 今天 ==="
+        if today_omitted:
+            header += f"（另有 {today_omitted} 条因条数/预算上限未列出）"
+        parts.append(header + "\n" + "\n---\n".join(today_results))
     if dynamic_results:
         parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
     if passive_results:
@@ -570,3 +682,48 @@ async def surface_default(
             )
         )
     return "\n\n".join(parts)
+
+
+_ID_RE = re.compile(r"\[bucket_id:([^\]]+)\]|\[ids: ([^\]]+)\]")
+
+
+def _ids_in(text: str) -> set[str]:
+    out: set[str] = set()
+    for a, b in _ID_RE.findall(text or ""):
+        out.update(x.strip() for x in (a or b).split(",") if x.strip())
+    return out
+
+
+async def surface_default(
+    max_results: int,
+    max_tokens: int,
+    tag_filter: list,
+    created_from: "datetime | None" = None,
+    created_to: "datetime | None" = None,
+) -> str:
+    """无参浮现入口。按 surfacing.style 分流：classic（默认）或 episodic（3.9.0）。
+
+    shadow_episodic=true 且 style=classic 时，仍输出 classic，同时计算 episodic，
+    只把两边的桶 id 差异写进日志，不改变返回内容。
+    """
+    from . import episodic
+
+    cfg = rt.config.get("surfacing", {}) or {}
+    style = str(cfg.get("style") or "classic").strip().lower()
+    args = (max_results, max_tokens, tag_filter, created_from, created_to)
+    if style == "episodic":
+        out = await episodic.surface_episodic(*args)
+        if out is not None:
+            return out
+    result = await _surface_classic(*args)
+    if style != "episodic" and parse_bool(cfg.get("shadow_episodic"), default=False):
+        try:
+            shadow = await episodic.surface_episodic(*args)
+            a, b = _ids_in(result), _ids_in(shadow or "")
+            rt.logger.info(
+                f"shadow_episodic: classic={len(a)} episodic={len(b)} both={len(a & b)} "
+                f"only_classic={sorted(a - b)[:20]} only_episodic={sorted(b - a)[:20]}"
+            )
+        except Exception as e:
+            rt.logger.warning(f"shadow_episodic failed: {e}")
+    return result

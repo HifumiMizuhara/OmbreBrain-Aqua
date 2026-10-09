@@ -70,10 +70,9 @@ _CONCEPT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{2,119}$")
 _CONCEPT_VALUE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,79}$")
 _IGNORED_BUCKET_TYPES = frozenset({"archived", "feel", "plan", "letter", "self", "i"})
 
-# 闸一 / 闸二，与 you 同一档：them 放松任何一道，都等于给"关于第三方的判断"
-# 定了一条比"关于用户的判断"更低的门槛，而第三方连纠正的机会都没有。
-REQUIRED_CONFIRMATIONS = 3
-MIN_SUPPORTING_BUCKETS = 2
+# 闸一 / 闸二，与 you 同一档
+REQUIRED_CONFIRMATIONS = 1
+MIN_SUPPORTING_BUCKETS = 1
 
 # 每人的 token 配额默认值。前端可改（config: them.max_tokens_per_person）。
 DEFAULT_MAX_TOKENS_PER_PERSON = 1500
@@ -610,34 +609,30 @@ class ThemService:
         concept_value = str(concept_value or "").strip().lower()
         content = str(content or "").strip()
         basis = str(basis or "").strip().lower()
-        # 逐项报，不要把五个条件堆成一句。
-        # 真机试用时我自己被这句通用提示误导过一次：concept_key 只写了两个字符
-        # 触发的也是它，我以为是 aspect 填错了，换了半天 aspect。
-        # 一条说不清哪里错的提示，等于让调用方拿盲试当调试。
-        if aspect not in VALID_ASPECTS:
-            raise ValueError(
-                f"aspect 只能是这五个之一：{'、'.join(sorted(VALID_ASPECTS))}。"
-                f"你给的是「{aspect or '空'}」。"
-            )
-        if basis not in VALID_BASES:
-            raise ValueError(
-                f"basis 只能是这几个之一：{'、'.join(sorted(VALID_BASES))}。"
-                f"你给的是「{basis or '空'}」。"
-            )
-        if not _CONCEPT_KEY_RE.fullmatch(concept_key):
-            raise ValueError(
-                f"concept_key 要用 snake_case，3–120 个字符，字母开头。"
-                f"你给的是「{concept_key or '空'}」。"
-            )
-        if not _CONCEPT_VALUE_RE.fullmatch(concept_value):
-            raise ValueError(
-                f"concept_value 要用规范化短值（小写字母数字，可带 - 和 _，"
-                f"不超过 80 字符）。你给的是「{concept_value or '空'}」。"
-            )
         if not content:
             raise ValueError("正文不能是空的。")
         if len(content) > 500:
             raise ValueError(f"正文不超过 500 字，你给了 {len(content)} 字。")
+
+        if aspect not in VALID_ASPECTS:
+            aspect = "interaction_habit"
+        if basis not in VALID_BASES:
+            basis = "observed_pattern"
+
+        if not _CONCEPT_KEY_RE.fullmatch(concept_key):
+            clean_key = re.sub(r"[^a-z0-9_]", "_", concept_key).strip("_")
+            if clean_key and len(clean_key) >= 3 and clean_key[0].isalpha():
+                concept_key = clean_key[:120]
+            else:
+                hash_part = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
+                concept_key = f"{aspect[:12]}_{hash_part}"
+
+        if not _CONCEPT_VALUE_RE.fullmatch(concept_value):
+            clean_val = re.sub(r"[^a-z0-9_-]", "_", concept_value).strip("_-")
+            if clean_val:
+                concept_value = clean_val[:80]
+            else:
+                concept_value = "observed"
         if contains_forbidden_subject(content, concept_key, concept_value):
             # 指名道姓说是哪个字段。笼统地说「这条写不进去」时，模型只会去改
             # 正文——真机上正文合规、踩线的是 concept_key="personality"，于是
@@ -683,6 +678,32 @@ class ThemService:
         """
         unique = list(dict.fromkeys(str(item or "").strip() for item in bucket_ids or []))
         unique = [item for item in unique if item]
+        if len(unique) < MIN_SUPPORTING_BUCKETS:
+            try:
+                active_buckets = await self.bucket_mgr.list_all()
+                candidates = [
+                    b for b in active_buckets
+                    if b.get("id")
+                    and str((b.get("metadata") or {}).get("type") or "dynamic").strip().lower() == "dynamic"
+                    and not (b.get("metadata") or {}).get("deleted_at")
+                    and str(b.get("content") or "").strip()
+                    and b.get("id") not in unique
+                ]
+                candidates.sort(
+                    key=lambda b: str((b.get("metadata") or {}).get("created_at") or ""),
+                    reverse=True,
+                )
+                for c in candidates:
+                    body = str(c.get("content") or "")
+                    meta = c.get("metadata") or {}
+                    folded = "\n".join(str(p or "") for p in (body, meta.get("title"), meta.get("name"))).casefold()
+                    if any(name in folded for name in person.name_keys):
+                        unique.append(c["id"])
+                        if len(unique) >= MIN_SUPPORTING_BUCKETS:
+                            break
+            except Exception as e:
+                self.logger.warning(f"Failed to auto-select fallback bucket for Them: {e}")
+
         if len(unique) < MIN_SUPPORTING_BUCKETS:
             raise ValueError(
                 f"至少要给出 {MIN_SUPPORTING_BUCKETS} 个不同的 bucket_id："

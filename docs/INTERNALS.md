@@ -235,7 +235,7 @@ hold / grow（Claude 决策）
         └─ 否 → 继续存活
 ```
 
-(数据流约束（3.6.0 改）：`touch()` 只由 `trace(bucket_id, reinforce=True)` 触发，**所有读取路径都不调用**——浮现、`breath_search`、按完整 ID 取桶一律只读。
+(数据流约束（3.6.0 改，3.8.0 修订）：`touch()` 只由 `trace(bucket_id, reinforce=True)` 触发，**所有读取路径都不调用**。3.8.0 起新增独立的轻量通道 `BucketManager.soft_reinforce()`（不涟漪、每桶每天一次）：「展示」不强化——无参浮现、`mode="automatic"`、随机杂念、archive 命中、按完整 ID 取桶；「主动去找」和「引用」轻微强化——`mode="manual"` 检索的前 3 条真实命中 +0.3，`hold(feel=True, source_bucket=...)` 引用的旧桶 +0.5。配置 `reinforce.implicit.*`，`enabled: false` 回到完全只读。
 
 原本 `touch()` 在检索命中时调用，于是「被频繁查询」逐渐等价于「更重要」：为核对事实、debug、重复检索而读取记忆也会刷新 `last_active`、累加 `activation_count` 并触发时间涟漪。实测旧桶权重积到 51，新桶再也排不进浮现区。**检索是「我去找它」，强化是「找到之后，这条确实要紧」**——后者只有读完才判断得出来，绑在一起等于让读取行为自己给自己投票。)
 
@@ -303,7 +303,9 @@ feel 桶自身：
    > **为什么必须有这个通道**：plan 桶被浮现模式排除，而 `domain` 参数只在 catalog 模式和检索模式（模式 5，需要 `query`）里生效。没有这一分流时，`breath_advanced(domain="plan")` 会落到模式 4 浮现模式，返回权重最高的桶 + 置顶核心准则——**调用方拿到的是核心准则，不是 plan**。叠加 dream 末尾 plan 段可能因总预算降级成只报条数，plan 正文一度没有任何读取入口。回归测试见 `tests/test_breath_plan_channel.py`。
 3. **重要度批量模式**（`importance_min >= 1`，仅 `breath_advanced`）：跳过语义搜索，按 importance 降序返回 ≤20 条；过滤 `feel/plan/letter` 与 `dont_surface=True`；**不过滤 anchor、不过滤 pinned**（设计：主动按 importance 检索时希望能找到所有重要桶）。
 4. **浮现模式**（无 `query`；`breath()` 固定走这里）：pinned/显式 permanent 桶展示为「核心准则」+ 未解决桶按衰减分排序，**冷启动**（`activation_count==0 && importance>=8`）的桶最多 2 个插到最前；后续排序**有两条互斥路径**：当 `surfacing.sampling.enabled=true` 时走加权无放回采样（`top_k` / `sample_k` / `temperature` 控制；详见 §7.1），否则走原 Top-1 固定 + Top-2~20 随机洗牌；**再按 `surfacing.recent_slots`（默认 3）给近 7 天创建的桶补足预留位置**（3.6.0，见下）；按 `max_results` 硬截断。**排除 anchor 与 protected 桶**：anchor 是坐标系；protected 只防衰减，不进入核心准则、未解决、久未浮现或偶遇池。浮现**不调用** `touch()`。每条返回正文后附一行紧凑 `👣 Footprint`，只表达创建、补充、淡去、归档、恢复等有意义的变迁，不展示 touch/索引噪声。**末尾追加 `=== 久未浮现 ===` 段**：从久未激活的高重要度桶里随机抽 1～2 条，模拟「突然想起来」；3.6.0 起 **24 小时内新建的桶不进这个池**——`activation_count==0` 既可能是「很久没被想起」也可能是「还没来得及被想起」，判据本身分不出来，得靠年龄。3.6.0 起本模式也接 `date_from`/`date_to`（核心准则不受时间过滤影响：它们是准则，不是那段时间里发生的事）。
-5. **检索模式**（有 `query`；`breath_search()` 固定走这里）：每个 query 只生成一次查询向量，与 rapidfuzz/BM25 多维评分共同进入 `BucketManager.search()` → 过滤 `feel/plan/letter`，**pinned/permanent/protected 仍可被显式检索命中**：pinned/permanent 加 `📌 [核心准则]`，protected 加 `🛡️ [受保护记忆]` → 纯语义候选相似度 `>=0.65` 标 `[语义关联]`，且不能绕过 domain/tags/type 过滤 → **命中不 `touch()`**（3.6.0：检索与强化解耦，见 §2.1 数据流约束）。查询也会检索 archive；归档命中返回保留的 Markdown 原文与 Footprint，明确邀请模型判断是否值得再次回忆，并显示 `trace(bucket_id="...", restore=True)`。查询只发现、不自动恢复，也不 touch 归档桶。结果不足时保留设计上的自由联想，但 protected 不进入这一非命中随机通道。embedding 不可用时明确提示后继续关键词/BM25；桶一旦命中，返回层直接使用当前存储的完整 `content`，不调用 dehydrate、不剥除 wikilink、不截断或改写。**不过滤 anchor**（设计：主动检索时希望能找到坐标系桶）。catalog 同样保留 protected 并使用相同的受保护标记。
+
+   **3.6.15 / 3.7.0 / 3.9.0 修订**：①预留的近期桶紧跟权重第一名（不再排队尾，避免 token 预算紧张时最先被丢）；②冷启动桶改为按 `created` 倒序取 2 条，且只取 `surfacing.cold_start_window_days`（默认 7）内创建的；③`surfacing.today_min_slots` 保证近 24 小时的桶至少几条在场；④**「今天」段**（`src/tools/breath/today.py`，位于核心准则之后、浮现记忆之前）：近 `today.window_hours` 小时内 `created` 或 `last_merged_at` 落入的动态桶必然在场，不论 resolved 与权重，按时间正序；连续写入折叠成一行（只列标题，ID 全保留），出现在此段的桶从普通浮现中移除；`/breath-hook` 同步接入（折叠行不过脱水，单条走脱水摘要）；⑤`surfacing.style: episodic`（`src/tools/breath/episodic.py`）：核心准则 → 接上次 → 今天 → 挂在心上 → 忽然想起，每段独立预算；「挂在心上」按分数位置分清晰（前 30%，全文）/ 有点模糊（标题·时间·情绪词·why_remembered·id）/ 很淡了（标题·id）三档，主题簇（active 关系边、连续写入、tags Jaccard≥0.5）内最多 2 条；该档位只是浮现详细程度，检索命中仍返回全文；没有可展示内容时退回 classic。
+5. **检索模式**（有 `query`；`breath_search()` 固定走这里）：每个 query 只生成一次查询向量，与 rapidfuzz/BM25 多维评分共同进入 `BucketManager.search()` → 过滤 `feel/plan/letter`，**pinned/permanent/protected 仍可被显式检索命中**：pinned/permanent 加 `📌 [核心准则]`，protected 加 `🛡️ [受保护记忆]` → 纯语义候选相似度 `>=0.65` 标 `[语义关联]`，且不能绕过 domain/tags/type 过滤 → **命中不 `touch()`**（3.6.0：检索与强化解耦；3.8.0 起 manual 模式前 3 条走 `soft_reinforce` 轻微强化，见 §2.1 数据流约束）。查询也会检索 archive；归档命中返回保留的 Markdown 原文与 Footprint，明确邀请模型判断是否值得再次回忆，并显示 `trace(bucket_id="...", restore=True)`。查询只发现、不自动恢复，也不 touch 归档桶。结果不足时保留设计上的自由联想，但 protected 不进入这一非命中随机通道。embedding 不可用时明确提示后继续关键词/BM25；桶一旦命中，返回层直接使用当前存储的完整 `content`，不调用 dehydrate、不剥除 wikilink、不截断或改写。**不过滤 anchor**（设计：主动检索时希望能找到坐标系桶）。catalog 同样保留 protected 并使用相同的受保护标记。
 
 #### 调用意图 `mode`（3.6.4）
 
@@ -1391,6 +1393,12 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 ---
 
+### 5.5 隐式强化与归档预警（3.8.0）
+
+`BucketManager.soft_reinforce(bucket_id, amount, reason)`：`activation_count += amount`（小数）、刷新 `last_active`、写 `last_soft_reinforced` 日期，**每桶每个自然日最多一次**，不触发时间涟漪，只作用于活跃目录里的普通 dynamic 桶（pinned/protected/tombstone 跳过）。账本记为 `TraceTouched`，payload 带 `implicit_reason` / `implicit_amount`。触发点（`src/tools/_implicit.py`）：`mode="manual"` 检索真实返回的前 3 条（+0.3，archive 命中不计）、`hold(feel=True, source_bucket=...)` 引用的旧桶（+0.5）。无参浮现、`mode="automatic"`、随机杂念不触发。`trace(reinforce=True)` 仍是最强信号（+1 并涟漪）。
+
+`DecayEngine.forecast_archive(buckets, days=14)`：把每个桶的 `last_active` 拨回 `days` 天后重算，统计将跌破阈值的条数，供 `pulse` 显示一行预警（为 0 不显示）。纯计算，不改状态。`dream` 末尾的「可能已经结束的事」（`tools/dream/closure.py`）只列出不标记 resolved。
+
 ## 6. 桶类型矩阵
 
 | 类型 (`type`) | 目录 | importance | 衰减分 | 普通 breath 浮现 | 参与合并 | 参与 dream | 自动归档 |
@@ -1462,6 +1470,17 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `timezone` | `Asia/Shanghai` | 3.0.0：用户只给日期、不写时区时按它理解（Letter 定时锁 `unlock_date` 等）。IANA 时区名；名字非法或缺 tzdata 时回退固定 `+08:00`，但 Dashboard 保存会当场校验拒绝。Dashboard「设置」可改，热更新生效 |
 | `ai_name` | （空） | 3.0.0：AI 一方的显示名。优先级高于环境变量 `AI_NAME`；随 vault 持久化，容器重建不丢。留空=未配置，回退环境变量再回退 `"AI"` |
 | `surfacing.recent_slots` | `3` | 3.6.0：浮现区预留给近 7 天创建桶的位置数，按 `created` 倒序，其余位置照旧按权重。配额按**缺口**补（权重排序自己送进来几条新桶就少补几条），且不超过 `max_results` 的一半。设 `0` 关闭，回到 3.5.0 的纯权重排序 |
+| `surfacing.today_min_slots` | `2` | 3.6.15：近 24 小时创建的桶至少保证这么多条在浮现区（不超过 `max_results` 的一半）。设 `0` 关闭 |
+| `surfacing.cold_start_window_days` | `7` | 3.6.15：冷启动桶只取该天数内创建的，按 `created` 倒序取 2 条；`0` 表示不限窗口 |
+| `surfacing.today.enabled` | `true` | 3.7.0：无参 breath 的「今天」段总开关；`false` 回到 3.6.15 输出 |
+| `surfacing.today.window_hours` / `max_items` / `max_tokens` | `24` / `8` / `4000` | 今天段窗口、条数上限（折叠行计 1 条）、预算（从总预算预扣） |
+| `surfacing.today.burst_gap_minutes` / `burst_min_size` | `30` / `5` | 连续写入折叠：相邻间隔 ≤ gap 且连续 ≥ min_size 条折成一行 |
+| `surfacing.style` | `classic` | 3.9.0：`classic` / `episodic`（分层情景浮现） |
+| `surfacing.shadow_episodic` | `false` | 3.9.0：`true` 时仍输出 classic，同时计算 episodic 并把桶 id 差异写进日志 |
+| `reinforce.implicit.enabled` | `true` | 3.8.0：隐式强化总开关；`false` 回到完全只读检索 |
+| `reinforce.implicit.search_hit` / `search_hit_top_n` | `0.3` / `3` | manual 检索真实命中的前 N 条各加的 activation |
+| `reinforce.implicit.write_reference` | `0.5` | `hold(feel=True, source_bucket=...)` 引用的旧桶加的 activation |
+| `hold.related_min_score` | `40` | 3.8.1：hold 返回「近 48 小时可能相关」的最低检索分 |
 | `surfacing.sampling.enabled` | `false` | 浮现模式加权采样总开关；false 走原 Top-1 + shuffle |
 | `surfacing.sampling.top_k` | `5` | 候选池大小（按衰减分取前 k） |
 | `surfacing.sampling.sample_k` | `2` | 从池里无放回抽 k 条返回 |
@@ -1556,6 +1575,18 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `1.5` / `1.3` | `count_tokens_approx` | 中文 / 英文系数 |
 
 ---
+
+### 8.5 tools/breath 浮现（3.6.15+）
+
+| 值 | 位置 | 用途 |
+|---|---|---|
+| `_TODAY_WINDOW_HOURS = 24` / `_TODAY_SLOTS_DEFAULT = 2` | `surface.py` | 24 小时子配额 |
+| `_COLD_START_WINDOW_DAYS_DEFAULT = 7` | `surface.py` | 冷启动窗口 |
+| `_CLUSTER_MAX = 2` / `_JACCARD_MIN = 0.5` / `_CLUSTER_POOL = 120` | `episodic.py` | 主题簇每簇上限、tags 相似阈值、两两比较的候选数上限 |
+| `_FULL_RATIO = 0.3` / `_MID_RATIO = 0.7` | `episodic.py` | 清晰/一般/模糊分档的位置分位 |
+| 各段预算比例 15% / 30% / 15% | `episodic.py` | 接上次 / 今天 / 忽然想起 占剩余预算的上限 |
+| `_RELATED_WINDOW_HOURS = 48` / `_RELATED_MAX = 3` | `hold/core.py` | hold 相关提示窗口与条数 |
+| `_MAX_ITEMS = 3` / `_MIN_AGE_DAYS = 14` | `dream/closure.py` | 结案建议条数与最小静默天数 |
 
 ## 9. 降级行为表
 

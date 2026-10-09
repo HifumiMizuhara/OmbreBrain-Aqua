@@ -31,6 +31,7 @@ tools/_common.py — 跨工具共享的辅助逻辑
 ========================================
 """
 
+from contextvars import ContextVar
 from typing import Tuple
 import asyncio
 from copy import deepcopy
@@ -799,6 +800,16 @@ async def enforce_pinned_quota(pinned: bool) -> bool:
     return True
 
 
+# 3.8.1: hold 要在返回里提示「近 48 小时可能相关」，复用合并检索的候选而不再检索一次。
+# merge_or_create 的三元组返回值被多处解包，不改签名，候选走 ContextVar 带出。
+_LAST_MERGE_CANDIDATES: ContextVar[list] = ContextVar("last_merge_candidates", default=[])
+
+
+def last_merge_candidates() -> list:
+    """最近一次 merge_or_create（同一调用上下文）检索到的候选，按分数降序。"""
+    return list(_LAST_MERGE_CANDIDATES.get())
+
+
 async def merge_or_create(
     content: str,
     tags: list,
@@ -889,8 +900,10 @@ async def _merge_or_create_inner(
         merge_why_remembered or ""
     ).strip()[:_WHY_REMEMBERED_MAX_CHARS]
     exact_storage_match = False
+    _LAST_MERGE_CANDIDATES.set([])
     try:
-        existing = await rt.bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+        existing = await rt.bucket_mgr.search(content, limit=5, domain_filter=domain or None)
+        _LAST_MERGE_CANDIDATES.set(list(existing or []))
     except Exception as e:
         rt.logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
@@ -1044,6 +1057,8 @@ async def _merge_or_create_inner(
                         update_kwargs["quotes_append"] = quotes
                     if source_tool:
                         update_kwargs["last_merged_by"] = source_tool
+                    # 3.7.0: 合并也是「今天写下的事」；今天通道同时看 created 与此字段。
+                    update_kwargs["last_merged_at"] = now_iso()
                     # grow digest 在首次拆条时还没有稳定的目标桶，
                     # 只能在后续确认命中同一事件时补写。旧值优先，
                     # 自动整理永不覆盖已有的人工或历史理由。

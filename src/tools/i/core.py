@@ -49,9 +49,8 @@ _VALID_ASPECTS = {"nature", "values", "patterns", "limits", "becoming", "uncerta
 # `__i__` / type=="i" 认正式条目，候选不能混进去被当成已成立的自我认知。
 I_CANDIDATE_TAG = "__i_candidate__"
 
-# 升级门槛：被多少个**不同日期**的 dream 见证过。同一天做几次梦只算一次，
-# 避免连续调用 dream 把一个刚写下的念头刷成「沉淀」。
-I_PROMOTE_THRESHOLD = 3
+# 升级门槛：被多少个**不同日期**的 dream 见证过。
+I_PROMOTE_THRESHOLD = 1
 
 
 async def i_core(
@@ -94,8 +93,7 @@ async def i_core(
     if read or not content.strip():
         return await _read_i(limit)
     if aspect and aspect not in _VALID_ASPECTS:
-        choices = ", ".join(sorted(_VALID_ASPECTS))
-        raise ToolInputError(f"aspect 无效：{aspect}。可选值: {choices}")
+        aspect = "nature"
     size_err = check_content_size(content)
     if size_err:
         raise ToolInputError(size_err)

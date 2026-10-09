@@ -31,6 +31,8 @@ from tools.plan.core import (
     normalize_expired_lock,
 )
 
+from tools.breath.today import plan_today, render_burst, today_config
+
 from . import _shared as sh
 
 logger = sh.logger
@@ -327,6 +329,41 @@ def register(mcp) -> None:
                 for bucket in pinned:
                     if not await append_summary(bucket, prefix="📌 [核心准则] "):
                         break
+
+                # 3.9.1: 与 breath() 一致的「今天」段。折叠行不过脱水；单条走摘要。
+                try:
+                    today_cfg = today_config(
+                        (getattr(sh, "config", {}) or {}).get("surfacing") or {}
+                    )
+                    if today_cfg["enabled"]:
+                        today_pool = [
+                            b for b in all_buckets
+                            if b["metadata"].get("type", "dynamic") == "dynamic"
+                            and not _truthy(b["metadata"].get("anchor"))
+                            and not _truthy(b["metadata"].get("pinned"))
+                            and not _truthy(b["metadata"].get("protected"))
+                            and not b["metadata"].get("dont_surface", False)
+                            and not is_letter_bucket(b)
+                            and _SURFACE_POLICY.evaluate_bucket(
+                                b, mode="spontaneous"
+                            ).allowed
+                        ]
+                        entries, _omitted = plan_today(today_pool, today_cfg)
+                        today_shown: set[str] = set()
+                        for kind, group in entries:
+                            if kind == "burst":
+                                ok = append_block(render_burst(group))
+                            else:
+                                stamp, bucket = group[0]
+                                ok = await append_summary(
+                                    bucket, prefix=f"🕐 [今天 {stamp:%H:%M}] "
+                                )
+                            if not ok:
+                                break
+                            today_shown.update(b["id"] for _, b in group)
+                        scored = [b for b in scored if b["id"] not in today_shown]
+                except Exception as exc:
+                    logger.warning("breath_hook today channel skipped: %s", exc)
 
                 candidates = list(scored)
                 if len(candidates) > 1:

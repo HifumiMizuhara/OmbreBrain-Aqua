@@ -94,6 +94,16 @@ async def pulse(include_archive: Optional[bool] = False) -> str:
         f"衰减引擎: {'运行中' if rt.decay_engine.is_running else '已停止'}\n"
     )
 
+    # --- 归档预警（3.8.0）：纯计算，只在有桶临近悬崖时才多出一行 ---
+    try:
+        forecast = getattr(rt.decay_engine, "forecast_archive", None)
+        if callable(forecast):
+            soon = forecast(await rt.bucket_mgr.list_all(include_archive=False), 14.0)
+            if soon:
+                status += f"⏳ 未来 14 天预计有 {soon} 条因衰减被归档（假设期间都不再被用到）\n"
+    except Exception as e:
+        rt.logger.warning(f"pulse archive forecast failed: {e}")
+
     # --- 索引/存储一致性检查（iter 2.1+）---
     # 桶文件落在磁盘但 embedding 缺失 → breath 走向量检索时会丢这些桶；
     # 反之孤儿 embedding 不影响检索，但占空间。两边一旦对不上就在 pulse 里告警，

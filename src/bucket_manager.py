@@ -463,6 +463,7 @@ _METADATA_TEXT_LIMITS = {
     "source_tool": _SOURCE_TOOL_MAX,
     "grow_batch_id": _GROW_BATCH_ID_MAX,
     "last_merged_by": _SOURCE_TOOL_MAX,
+    "last_merged_at": 64,
     "_pre_anchor_source_tool": _SOURCE_TOOL_MAX,
 }
 
@@ -2564,7 +2565,8 @@ class BucketManager:
                   # 表示「最后一次合并是 hold 还是 grow 触发的」。
                   # _pre_anchor_source_tool 是 anchor 时保存的原始 source_tool，
                   # release 时自动恢复；None 表示删除该字段。
-                  "source_tool", "grow_batch_id", "last_merged_by", "_pre_anchor_source_tool",
+                  "source_tool", "grow_batch_id", "last_merged_by", "last_merged_at",
+                  "_pre_anchor_source_tool",
                   # I 沉淀机制字段（tools/i/core.py 维护，bucket_manager 不生成也不解读）：
                   # i_stage        "candidate" | "promoted"，标一条普通记忆是 I 候选
                   # i_dream_dates  被 dream 见证过的日期列表（按天去重），升级门槛的唯一依据
@@ -3194,6 +3196,77 @@ class BucketManager:
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
             return None
+
+    async def soft_reinforce(self, bucket_id: str, amount: float, reason: str) -> bool:
+        """隐式强化（3.8.0）：「主动去找」或「引用」留下的轻微激活。
+
+        与 touch() 的区别：增量可为小数、不触发时间涟漪（避免放大），
+        并且每个桶每个自然日最多一次（frontmatter `last_soft_reinforced`）。
+        只作用于活跃目录里的普通 dynamic 桶。返回是否真的写入了。
+        """
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(amount) or amount <= 0:
+            return False
+        today = datetime.now().strftime("%Y-%m-%d")
+        async with self._bucket_turn(bucket_id):
+            file_path = self._find_bucket_file(bucket_id)
+            if not file_path:
+                return False
+            normalized_path = os.path.normcase(os.path.abspath(file_path))
+            in_active = False
+            for active_dir in self._active_dirs:
+                normalized_dir = os.path.normcase(os.path.abspath(active_dir))
+                try:
+                    if os.path.commonpath((normalized_path, normalized_dir)) == normalized_dir:
+                        in_active = True
+                        break
+                except ValueError:
+                    continue
+            if not in_active:
+                return False
+            try:
+                post = frontmatter.load(file_path)
+                if str(post.get("id") or bucket_id) != bucket_id:
+                    return False
+                if (
+                    str(post.get("type") or "dynamic").strip().lower() != "dynamic"
+                    or parse_bool(post.get("pinned"), default=False)
+                    or parse_bool(post.get("protected"), default=False)
+                    or parse_bool(post.get("tombstone"), default=False)
+                    or post.get("deleted_at")
+                ):
+                    return False
+                if str(post.get("last_soft_reinforced") or "") == today:
+                    return False
+                current = float(post.get("activation_count") or 0)  # type: ignore[arg-type]
+                if not math.isfinite(current) or current < 0:
+                    current = 0.0
+                post["activation_count"] = round(current + amount, 1)
+                post["last_active"] = now_iso()
+                post["last_soft_reinforced"] = today
+                _atomic_write_text(file_path, frontmatter.dumps(post))
+                self._cache_bump(
+                    bucket_id,
+                    last_active=post["last_active"],
+                    activation_count=post["activation_count"],
+                    file_path=file_path,
+                )
+                # 复用 TraceTouched：投影与 footprint 已认识它；reason 写进 payload 以便追溯/回滚。
+                self._record_ledger_event(
+                    "TraceTouched",
+                    bucket_id,
+                    str(post.get("type") or "dynamic"),
+                    post.content or "",
+                    dict(post.metadata),
+                    {"implicit_reason": str(reason)[:64], "implicit_amount": amount},
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to soft-reinforce bucket / 隐式强化失败: {bucket_id}: {e}")
+                return False
 
     async def touch_many(self, bucket_ids: list, ripple: bool = False) -> None:
         """批量 touch（性能 P2）：breath 浮现后一次性更新一批桶的激活，供后台任务调用。

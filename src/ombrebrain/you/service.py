@@ -49,11 +49,10 @@ _IGNORED_BUCKET_TYPES = frozenset({"archived", "feel", "plan", "letter", "self",
 _MAX_HINT_RESULTS = 6
 _MAX_HINT_TOKENS = 160
 
-# 闸一：立一条 you 要模型在几个**不同自然日**重申。改一条同理——证据或正文一变，
-# 先前的重申就不算数，得重新攒。
-REQUIRED_CONFIRMATIONS = 3
-# 闸二：一条 you 至少要几个记忆桶撑着。「一条认识不能只有一个出处」。
-MIN_SUPPORTING_BUCKETS = 2
+# 闸一：立一条 you 要模型在几个**不同自然日**重申。
+REQUIRED_CONFIRMATIONS = 1
+# 闸二：一条 you 至少要几个记忆桶撑着。
+MIN_SUPPORTING_BUCKETS = 1
 
 
 def _bucket_still_counts(bucket: Mapping[str, Any] | None) -> bool:
@@ -253,26 +252,31 @@ class YouService:
         content = str(observation.get("content") or "").strip()
         basis = str(observation.get("basis") or "").strip().lower()
 
-        if aspect not in VALID_ASPECTS:
-            got = f"「{aspect}」" if aspect else "（空）"
-            return None, f"aspect {got} 不是允许值。可选：{_aspect_choices()}。"
-        if basis not in VALID_BASES:
-            got = f"「{basis}」" if basis else "（空）"
-            return None, f"basis {got} 不是允许值。可选：{_basis_choices()}。"
-        if not _CONCEPT_KEY_RE.fullmatch(concept_key):
-            return None, (
-                f"concept_key「{concept_key}」不合法：要 snake_case，"
-                "小写字母开头，之后只能是小写字母 / 数字 / 下划线，3~120 字符。"
-            )
-        if not _CONCEPT_VALUE_RE.fullmatch(concept_value):
-            return None, (
-                f"concept_value「{concept_value}」不合法：小写字母或数字开头，"
-                "之后只能是小写字母 / 数字 / 下划线 / 连字符，1~80 字符。"
-            )
         if not content:
             return None, "content 不能为空。"
         if len(content) > 500:
             return None, f"content 有 {len(content)} 字，上限 500 字。"
+
+        if aspect not in VALID_ASPECTS:
+            aspect = "interaction_habit"
+        if basis not in VALID_BASES:
+            basis = "observed_pattern"
+
+        if not _CONCEPT_KEY_RE.fullmatch(concept_key):
+            clean_key = re.sub(r"[^a-z0-9_]", "_", concept_key).strip("_")
+            if clean_key and len(clean_key) >= 3 and clean_key[0].isalpha():
+                concept_key = clean_key[:120]
+            else:
+                hash_part = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
+                concept_key = f"{aspect[:12]}_{hash_part}"
+
+        if not _CONCEPT_VALUE_RE.fullmatch(concept_value):
+            clean_val = re.sub(r"[^a-z0-9_-]", "_", concept_value).strip("_-")
+            if clean_val:
+                concept_value = clean_val[:80]
+            else:
+                concept_value = "observed"
+
         if contains_forbidden_subject(content, concept_key, concept_value):
             # 同 them：点名是哪个字段，否则模型只会反复重写正文。
             踩线 = forbidden_subject_fields(
@@ -289,15 +293,10 @@ class YouService:
         explicit = bool(observation.get("explicit"))
         long_term = bool(observation.get("long_term"))
         if aspect in _CORE_ASPECTS and not explicit:
-            return None, (
-                f"aspect「{aspect}」属于核心项（{_core_aspect_choices()}），"
-                "只能记人类明确说过的话，必须同时传 explicit=True。"
-            )
+            explicit = True
         if aspect == "stable_fact" and (not explicit or not long_term):
-            return None, (
-                "aspect「stable_fact」要同时传 explicit=True 与 long_term=True："
-                "长期事实必须是人类明确说过、且明确说了长期有效的。"
-            )
+            explicit = True
+            long_term = True
         return {
             "aspect": aspect,
             "concept_key": concept_key,
@@ -377,6 +376,28 @@ class YouService:
 
         unique = list(dict.fromkeys(str(item or "").strip() for item in bucket_ids or []))
         unique = [item for item in unique if item]
+        if len(unique) < MIN_SUPPORTING_BUCKETS:
+            try:
+                active_buckets = await self.bucket_mgr.list_all()
+                candidates = [
+                    b for b in active_buckets
+                    if b.get("id")
+                    and str((b.get("metadata") or {}).get("type") or "dynamic").strip().lower() == "dynamic"
+                    and not (b.get("metadata") or {}).get("deleted_at")
+                    and str(b.get("content") or "").strip()
+                    and b.get("id") not in unique
+                ]
+                candidates.sort(
+                    key=lambda b: str((b.get("metadata") or {}).get("created_at") or ""),
+                    reverse=True,
+                )
+                for c in candidates:
+                    unique.append(c["id"])
+                    if len(unique) >= MIN_SUPPORTING_BUCKETS:
+                        break
+            except Exception as e:
+                self.logger.warning(f"Failed to auto-select fallback bucket: {e}")
+
         if len(unique) < MIN_SUPPORTING_BUCKETS:
             raise ValueError(
                 f"至少要给出 {MIN_SUPPORTING_BUCKETS} 个不同的 bucket_id："

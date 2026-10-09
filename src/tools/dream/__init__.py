@@ -23,6 +23,7 @@ from typing import Optional
 from ..i import record_dream_offer, record_dream_pass
 from .. import _runtime as rt
 from .candidates import collect_candidates
+from .closure import find_possibly_closed, render_closure_hint
 from .hints import build_connection_hint, build_crystal_hint, collect_self_candidates
 from .output import format_dream_output
 
@@ -79,6 +80,14 @@ async def dispatch(
         else:
             if them_block:
                 final_text = f"{final_text}\n\n{them_block}"
+
+    try:
+        closure_block = render_closure_hint(find_possibly_closed(all_buckets))
+    except Exception as exc:
+        rt.logger.warning(f"dream closure hint skipped / 结案建议跳过: {exc}")
+    else:
+        if closure_block:
+            final_text = f"{final_text}\n\n{closure_block}"
 
     rendered_candidates = list(getattr(self_review, "rendered_ids", None) or [])
     if rendered_candidates:

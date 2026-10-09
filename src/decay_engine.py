@@ -25,7 +25,7 @@ decay_engine.py — 记忆衰减引擎，模拟人类遗忘曲线
 import math
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from utils import parse_bool, parse_iso_datetime
 
@@ -270,6 +270,36 @@ class DecayEngine:
         )
 
         return round(base_score * resolved_factor * urgency_boost, 4)
+
+    def forecast_archive(self, buckets: list, days: float = 14.0) -> int:
+        """预计未来 days 天内会跌破阈值被归档的桶数（3.8.0，纯计算，不改任何状态）。
+
+        假设这些桶在此期间都不再被激活：把 last_active 往回拨 days 天再算分。
+        跳过与 run_decay_cycle 相同的豁免类型；现在就低于阈值的不重复计。
+        """
+        shift = timedelta(days=days)
+        count = 0
+        for bucket in buckets:
+            meta = bucket.get("metadata", {}) or {}
+            if (
+                meta.get("type") in ("permanent", "feel", "i", "plan", "letter", "archived")
+                or meta.get("pinned")
+                or meta.get("protected")
+                or parse_bool(meta.get("anchor"), default=False)
+            ):
+                continue
+            try:
+                now_score = self.calculate_score(meta)
+                if now_score < self.threshold:
+                    continue
+                raw = meta.get("last_active") or meta.get("created") or ""
+                moved = dict(meta)
+                moved["last_active"] = (parse_iso_datetime(raw) - shift).isoformat()
+                if self.calculate_score(moved) < self.threshold:
+                    count += 1
+            except Exception:
+                continue
+        return count
 
     # ---------------------------------------------------------
     # Execute one decay cycle
