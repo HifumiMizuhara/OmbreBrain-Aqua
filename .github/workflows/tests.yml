@@ -33,10 +33,10 @@ jobs:
 
       - name: Verify dependency lockfiles
         # 固定到当前发布锁首次生成时的索引快照；升级依赖时需显式推进并重生成两份锁。
-        # 2026-08-09：推进到 2026-08-01，只为吃到 cryptography 50.0.0（修复 PYSEC-2026-3552，
-        # 旧快照 2026-07-12 早于该版本发布日 2026-07-31，pip-audit 永远卡在 49.0.0 上）。
+        # 2026-08-09：推进到 2026-08-01，只为吃到 cryptography 50.0.0（修复 PYSEC-2026-3552）。
+        # 2026-10-10：推进到 2026-10-01，获取 pyjwt 2.15.1（修复 PYSEC-2026-4140~4183 审计漏洞）。
         env:
-          UV_EXCLUDE_NEWER: '2026-08-01T00:00:00Z'
+          UV_EXCLUDE_NEWER: '2026-10-01T00:00:00Z'
         run: |
           rm -f requirements.lock.txt requirements-dev.lock.txt
           uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes --output-file requirements.lock.txt
