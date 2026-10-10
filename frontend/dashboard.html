@@ -761,6 +761,91 @@
   .flow-step.active { border-color: var(--accent); color: var(--accent); }
   .flow-arrow { color: var(--text-light); font-size: 16px; }
 
+  .breath-budget-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    box-shadow: 2px 2px 6px var(--shadow-dark-subtle);
+  }
+  .episodic-section-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 14px;
+    overflow: hidden;
+    box-shadow: 2px 2px 6px var(--shadow-dark-subtle);
+  }
+  .episodic-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: rgba(0,0,0,0.02);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .episodic-section-header .section-meta {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: normal;
+  }
+  .episodic-item-row {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .episodic-item-row:last-child { border-bottom: none; }
+  .tier-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .tier-full { background: rgba(16, 185, 129, 0.15); color: #047857; }
+  .tier-mid { background: rgba(245, 158, 11, 0.15); color: #B45309; }
+  .tier-faint { background: rgba(156, 163, 175, 0.15); color: #4B5563; }
+  .breath-cluster-tag {
+    background: rgba(99, 102, 241, 0.1);
+    color: #4F46E5;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: monospace;
+  }
+  .breath-raw-details {
+    margin-top: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+  }
+  .breath-raw-details summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .breath-raw-details pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    font-family: 'Share Tech Mono', monospace;
+    background: rgba(0,0,0,0.03);
+    padding: 12px;
+    border-radius: 4px;
+    margin-top: 10px;
+    max-height: 450px;
+    overflow-y: auto;
+  }
+
   @media (max-width: 768px) {
     /* ── Header: title row + meta row + search row ── */
     .header {
@@ -2264,30 +2349,30 @@
 
 <div class="content" id="breath-view" style="display:none">
   <div class="breath-flow" id="breath-flow">
-    <div class="flow-step" id="fs-input">① 输入 Input<br><small>query / valence / arousal</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-candidates">② 候选池 Candidates<br><small id="fs-cand-n">— 桶</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-scoring">③ 四维评分 Scoring<br><small>topic×4 + emotion×2 + time×2.5 + imp×1</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-threshold">④ 阈值过滤 Threshold<br><small id="fs-thresh-n">≥50 → — 通过</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-sort">⑤ 降序排列 Sort<br><small>返回 top N</small></div>
+    <!-- 动态流程阶段由 JS 根据当前模式渲染 -->
   </div>
 
   <div class="breath-controls">
-    <label>Query</label>
-    <input type="text" id="breath-query" placeholder="关键词…" style="width:220px" />
-    <label>Valence</label>
-    <input type="number" id="breath-valence" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <label>Arousal</label>
-    <input type="number" id="breath-arousal" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <button onclick="runBreathDebug()" title="模拟 Breath" style="padding:0 12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="wind"></i> 模拟 Simulate</button>
+    <label>模拟模式</label>
+    <select id="breath-mode" onchange="onBreathModeChange()" style="font-size:12px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;">
+      <option value="episodic">情景浮现 Episodic (3.9.0+ 推荐)</option>
+      <option value="classic">经典浮现 Classic</option>
+      <option value="search">带参检索打分 Search Debug</option>
+    </select>
+    <div id="breath-search-inputs" style="display:none;align-items:center;gap:10px;">
+      <label>Query</label>
+      <input type="text" id="breath-query" placeholder="关键词…" style="width:200px" />
+      <label>Valence</label>
+      <input type="number" id="breath-valence" placeholder="0~1" min="0" max="1" step="0.1" style="width:70px" />
+      <label>Arousal</label>
+      <input type="number" id="breath-arousal" placeholder="0~1" min="0" max="1" step="0.1" style="width:70px" />
+    </div>
+    <button onclick="runBreathDebug()" title="模拟 Breath" style="padding:0 16px;height:38px;display:inline-flex;align-items:center;gap:6px;"><i data-lucide="wind"></i> 模拟 Simulate</button>
   </div>
 
   <div class="breath-info" id="breath-info" style="display:none"></div>
   <div id="breath-results">
-    <div class="loading">输入 query 后点击「模拟」查看评分链路 · Enter a query and click Simulate</div>
+    <div class="loading">点击「模拟 Simulate」测试当前浮现模式下的记忆链路 · Click Simulate to test surfacing</div>
   </div>
 </div>
 
@@ -3122,6 +3207,19 @@
         <div style="font-weight:600;font-size:13px;margin-bottom:6px;">默认参数 <span class="en">Defaults</span><span style="font-weight:400;font-size:11px;color:var(--text-light);margin-left:6px;">（与「引擎」共用「保存」按钮）</span></div>
         <div class="config-row"><label>合并阈值</label><input type="number" id="cfg-merge" min="0" max="100" /></div>
         <div style="margin-top:-4px;padding-left:122px;font-size:11px;color:var(--text-light);">0-100，越高越难合并相似桶</div>
+        <div class="config-row"><label>浮现风格</label>
+          <select id="cfg-sf-style" style="width:220px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:2px;">
+            <option value="classic">经典加权采样 (classic)</option>
+            <option value="episodic">分层情景浮现 (episodic - 3.9.0+)</option>
+          </select>
+        </div>
+        <div style="margin-top:-4px;padding-left:122px;font-size:11px;color:var(--text-light);">episodic：7层人类情景记忆结构（核心准则→认知→待办→接上次→今天→挂在心上→忽然想起）；经典：纯衰减加权采样</div>
+        <div class="config-row"><label>影子对比</label>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;font-size:12px;">
+            <input type="checkbox" id="cfg-sf-shadow-episodic" />
+            <span>开启 shadow_episodic（在日志中打印 classic 与 episodic 浮现差异）</span>
+          </label>
+        </div>
         <div class="config-row"><label>breath 默认桶数</label><input type="number" id="cfg-sf-breath-results" min="1" max="50" /></div>
         <div style="margin-top:-4px;padding-left:122px;font-size:11px;color:var(--text-light);">1-50。AI 调用 breath() 不指定 max_results 时使用此默认值</div>
         <div class="config-row"><label>breath 默认 token</label><input type="number" id="cfg-sf-breath-tokens" min="500" max="40000" step="500" /></div>
@@ -5399,6 +5497,7 @@ function activateDashboardTab(tab) {
     document.getElementById('about-view').style.display = target === 'about' ? '' : 'none';
     if (target !== 'network' && _netRAF) { cancelAnimationFrame(_netRAF); _netRAF = null; }
     if (target === 'network') pending.push(loadNetwork());
+    if (target === 'breath') onBreathModeChange();
     if (target === 'plan') pending.push(loadPlans());
     if (target === 'list') pending.push(loadBuckets());
     if (target === 'import') pending.push(pollImportStatus(), loadImportResults());
@@ -7224,87 +7323,298 @@ function _eggPoem(){
   }, 2000);
 })();
 
+function renderBreathFlowSkeleton(mode) {
+  var container = document.getElementById('breath-flow');
+  if (!container) return;
+  if (mode === 'episodic') {
+    container.innerHTML = [
+      '<div class="flow-step" id="bfs-core">① 核心准则<br><small>pinned / 永久记忆</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-cog">② 核心认知<br><small>我 / 你 / TA</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-plans">③ 活跃待办<br><small>plan / 任务</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-last">④ 接上次<br><small>last session</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-today">⑤ 今天<br><small>today 窗口</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-mind">⑥ 挂在心上<br><small>簇化 + 模糊衰减</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-recall">⑦ 忽然想起<br><small>远期记忆联想</small></div>',
+    ].join('');
+  } else if (mode === 'classic') {
+    container.innerHTML = [
+      '<div class="flow-step" id="bfs-c-core">① 核心准则<br><small>pinned 桶置顶</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-c-today">② 今天记忆<br><small>今日事件保真</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-c-score">③ 四维衰减评分<br><small>4D decay scoring</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="bfs-c-budget">④ Token 预算装配<br><small>Budget Packer</small></div>',
+    ].join('');
+  } else {
+    container.innerHTML = [
+      '<div class="flow-step" id="fs-input">① 输入 Input<br><small>query / valence / arousal</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="fs-candidates">② 候选池 Candidates<br><small id="fs-cand-n">— 桶</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="fs-scoring">③ 四维评分 Scoring<br><small>topic + emotion + time + imp</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="fs-threshold">④ 阈值过滤 Threshold<br><small id="fs-thresh-n">≥50 → — 通过</small></div>',
+      '<span class="flow-arrow">→</span>',
+      '<div class="flow-step" id="fs-sort">⑤ 降序排列 Sort<br><small>返回 top N</small></div>',
+    ].join('');
+  }
+}
+
+function onBreathModeChange() {
+  var modeEl = document.getElementById('breath-mode');
+  var mode = modeEl ? modeEl.value : 'episodic';
+  var searchInputs = document.getElementById('breath-search-inputs');
+  if (searchInputs) {
+    searchInputs.style.display = mode === 'search' ? 'inline-flex' : 'none';
+  }
+  renderBreathFlowSkeleton(mode);
+}
+
+// 页面载入时预渲染一次浮现骨架
+onBreathModeChange();
+
 async function runBreathDebug() {
-  var query = document.getElementById('breath-query').value.trim();
-  var valence = document.getElementById('breath-valence').value;
-  var arousal = document.getElementById('breath-arousal').value;
+  var modeEl = document.getElementById('breath-mode');
+  var mode = modeEl ? modeEl.value : 'episodic';
   var results = document.getElementById('breath-results');
   var info = document.getElementById('breath-info');
 
   if (window.ObPet) ObPet.react('breath');   // 电子宠物：breath 时跳一下/破壳
   results.innerHTML = '<div class="loading">计算中…</div>';
+  info.style.display = 'none';
 
-  var url = BASE + '/api/breath-debug?q=' + encodeURIComponent(query);
-  if (valence) url += '&valence=' + valence;
-  if (arousal) url += '&arousal=' + arousal;
+  if (mode === 'search') {
+    var query = (document.getElementById('breath-query') ? document.getElementById('breath-query').value : '').trim();
+    var valence = document.getElementById('breath-valence') ? document.getElementById('breath-valence').value : '';
+    var arousal = document.getElementById('breath-arousal') ? document.getElementById('breath-arousal').value : '';
 
+    var url = BASE + '/api/breath-debug?mode=search&q=' + encodeURIComponent(query);
+    if (valence) url += '&valence=' + valence;
+    if (arousal) url += '&arousal=' + arousal;
+
+    try {
+      var res = await fetch(url);
+      var data = await res.json();
+      if (data.error) {
+        results.innerHTML = '<div class="loading">错误: ' + esc(data.error) + '</div>';
+        return;
+      }
+
+      var fsInput = document.getElementById('fs-input'); if (fsInput) fsInput.classList.add('active');
+      var fsCandN = document.getElementById('fs-cand-n'); if (fsCandN) fsCandN.textContent = (data.total_candidates || 0) + ' 桶';
+      var fsCand = document.getElementById('fs-candidates'); if (fsCand) fsCand.classList.add('active');
+      var fsScoring = document.getElementById('fs-scoring'); if (fsScoring) fsScoring.classList.add('active');
+      var fsThreshN = document.getElementById('fs-thresh-n'); if (fsThreshN) fsThreshN.textContent = '≥' + data.threshold + ' → ' + (data.passed_count || 0) + ' 通过';
+      var fsThreshold = document.getElementById('fs-threshold'); if (fsThreshold) fsThreshold.classList.add('active');
+      var fsSort = document.getElementById('fs-sort'); if (fsSort) fsSort.classList.add('active');
+
+      var w = data.weights || {};
+      info.style.display = '';
+      info.innerHTML =
+        '<strong>检索模式打分分解</strong>&nbsp;' +
+        'topic=<code>' + Number(w.topic || 0) + '</code> emotion=<code>' + Number(w.emotion || 0) + '</code> ' +
+        'time=<code>' + Number(w.time || 0) + '</code> importance=<code>' + Number(w.importance || 0) + '</code>' +
+        ' &nbsp;|&nbsp; 阈值=<code>' + Number(data.threshold || 0) + '</code>' +
+        ' &nbsp;|&nbsp; 候选=<code>' + Number(data.total_candidates || 0) + '</code> 桶' +
+        ' → 通过=<code>' + Number(data.passed_count || 0) + '</code> 桶' +
+        (query ? '' : ' &nbsp;|&nbsp; <em>未输入 query，topic 分数全为 0</em>');
+
+      if (!data.results || !data.results.length) {
+        results.innerHTML = '<div class="loading">无结果</div>';
+        return;
+      }
+
+      var barColors = {
+        topic: '#2F4F4F',
+        emotion: '#8B6A6A',
+        time: '#9A7B4F',
+        importance: '#4A7C59',
+      };
+
+      results.innerHTML = data.results.map(function(r, i) {
+        var s = r.scores || {};
+        var passed = r.passed_threshold;
+        var iconName = r.pinned ? 'pin' : r.resolved ? 'moon' : r.type === 'feel' ? 'droplet' : 'message-circle';
+        var icon = '<i data-lucide="' + iconName + '"></i>';
+        var bars = Object.entries(s).map(function(entry) {
+          var key = entry[0], val = entry[1];
+          var pct = Math.round(val * 100);
+          var wt = r.weights ? r.weights[key] : '';
+          return '<div class="score-bar-group">' +
+            '<div class="score-bar-label"><span>' + key + (wt ? '×' + wt : '') + '</span><span>' + Number(val).toFixed(2) + '</span></div>' +
+            '<div class="score-bar-track">' +
+              '<div class="score-bar-fill" style="width:' + pct + '%;background:' + (barColors[key] || 'var(--accent)') + '"></div>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+
+        return '<div class="score-row" title="' + escAttr(r.name) + '">' +
+          '<span class="rank">' + (i < 9 ? '0' : '') + (i + 1) + '</span>' +
+          '<span class="name">' + icon + ' ' + esc(r.name) + '</span>' +
+          '<div class="score-bars">' + bars + '</div>' +
+          '<span class="score-final ' + (passed ? 'score-pass' : 'score-fail') + '">' + (r.normalized != null ? Number(r.normalized).toFixed(1) : '0.0') + (r.resolved ? '<small>×0.3</small>' : '') + '</span>' +
+        '</div>';
+      }).join('');
+      if (window.lucide) lucide.createIcons();
+    } catch (e) {
+      results.innerHTML = '<div class="loading">请求失败: ' + esc(e.message) + '</div>';
+    }
+    return;
+  }
+
+  // Episodic 或 Classic 模式
+  var url = BASE + '/api/breath-debug?mode=' + encodeURIComponent(mode);
   try {
     var res = await fetch(url);
     var data = await res.json();
-
-    document.getElementById('fs-input').classList.add('active');
-    document.getElementById('fs-cand-n').textContent = data.total_candidates + ' 桶';
-    document.getElementById('fs-candidates').classList.add('active');
-    document.getElementById('fs-scoring').classList.add('active');
-    document.getElementById('fs-thresh-n').textContent = '≥' + data.threshold + ' → ' + data.passed_count + ' 通过';
-    document.getElementById('fs-threshold').classList.add('active');
-    document.getElementById('fs-sort').classList.add('active');
-
-    var w = data.weights;
-    info.style.display = '';
-    info.innerHTML =
-      '<strong>权重配置</strong>&nbsp;' +
-      'topic=<code>' + Number(w.topic) + '</code> emotion=<code>' + Number(w.emotion) + '</code> ' +
-      'time=<code>' + Number(w.time) + '</code> importance=<code>' + Number(w.importance) + '</code>' +
-      ' &nbsp;|&nbsp; 阈值=<code>' + Number(data.threshold) + '</code>' +
-      ' &nbsp;|&nbsp; 候选=<code>' + Number(data.total_candidates) + '</code> 桶' +
-      ' → 通过=<code>' + Number(data.passed_count) + '</code> 桶' +
-      (query ? '' : ' &nbsp;|&nbsp; <em>未输入 query，topic 分数全为 0</em>');
-
-    if (!data.results.length) {
-      results.innerHTML = '<div class="loading">无结果</div>';
+    if (data.error) {
+      results.innerHTML = '<div class="loading">错误: ' + esc(data.error) + '</div>';
       return;
     }
 
-    var barColors = {
-      topic: '#2F4F4F',
-      emotion: '#8B6A6A',
-      time: '#9A7B4F',
-      importance: '#4A7C59',
-    };
+    if (mode === 'episodic') {
+      ['bfs-core', 'bfs-cog', 'bfs-plans', 'bfs-last', 'bfs-today', 'bfs-mind', 'bfs-recall'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add('active');
+      });
+    } else {
+      ['bfs-c-core', 'bfs-c-today', 'bfs-c-score', 'bfs-c-budget'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add('active');
+      });
+    }
 
-    results.innerHTML = data.results.map(function(r, i) {
-      var s = r.scores;
-      var passed = r.passed_threshold;
-      var iconName = r.pinned ? 'pin' : r.resolved ? 'moon' : r.type === 'feel' ? 'droplet' : 'message-circle';
-      var icon = '<i data-lucide="' + iconName + '"></i>';
-      var bars = Object.entries(s).map(function(entry) {
-        var key = entry[0], val = entry[1];
-        var pct = Math.round(val * 100);
-        var wt = r.weights[key];
-        return '<div class="score-bar-group">' +
-          '<div class="score-bar-label"><span>' + key + '×' + wt + '</span><span>' + val.toFixed(2) + '</span></div>' +
-          '<div class="score-bar-track">' +
-            '<div class="score-bar-fill" style="width:' + pct + '%;background:' + barColors[key] + '"></div>' +
-          '</div>' +
-        '</div>';
-      }).join('');
+    info.style.display = '';
+    var styleNote = data.mode === 'episodic' ? '情景分层浮现 (Episodic)' : '经典衰减加权浮现 (Classic)';
+    var shadowNote = data.shadow_episodic ? ' <span style="color:var(--accent);font-weight:600;">[Shadow 对比运行中]</span>' : '';
+    info.innerHTML = '<strong>当前运行模式</strong>&nbsp;' + styleNote +
+      ' &nbsp;|&nbsp; 默认风格=<code>' + esc(data.effective_style || 'classic') + '</code>' +
+      shadowNote;
 
-      return '<div class="score-row" title="' + escAttr(r.name) + '">' +
-        '<span class="rank">' + (i < 9 ? '0' : '') + (i + 1) + '</span>' +
-        '<span class="name">' + icon + ' ' + esc(r.name) + '</span>' +
-        '<div class="score-bars">' + bars + '</div>' +
-        '<span class="score-final ' + (passed ? 'score-pass' : 'score-fail') + '">' + r.normalized.toFixed(1) + (r.resolved ? '<small>×0.3</small>' : '') + '</span>' +
-      '</div>';
-    }).join('');
+    var b = data.budget || { max_tokens: 20000, used_tokens: 0, remaining_tokens: 20000 };
+    var usedPct = Math.min(100, Math.round(((b.used_tokens || 0) / (b.max_tokens || 1)) * 100));
+
+    var html = '';
+
+    // Token 预算卡片
+    html += '<div class="breath-budget-card">';
+    html += '  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+    html += '    <div style="font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;"><i data-lucide="gauge"></i> Token 预算消耗明细</div>';
+    html += '    <div style="font-size:12px;font-family:monospace;color:var(--text-dim);">' + (b.used_tokens || 0) + ' / ' + (b.max_tokens || 0) + ' tokens (' + usedPct + '%) · 剩余 ' + (b.remaining_tokens || 0) + '</div>';
+    html += '  </div>';
+    html += '  <div style="width:100%;height:8px;background:rgba(0,0,0,0.06);border-radius:4px;overflow:hidden;">';
+    html += '    <div style="height:100%;width:' + usedPct + '%;background:' + (usedPct > 90 ? '#E53E3E' : 'var(--accent)') + ';transition:width .3s;"></div>';
+    html += '  </div>';
+    html += '</div>';
+
+    // TA 认知卡片 (若存在)
+    if (data.them && data.them.content) {
+      html += '<div class="episodic-section-card">';
+      html += '  <div class="episodic-section-header">';
+      html += '    <i data-lucide="users"></i> ' + esc(data.them.title || '对他人的认识');
+      html += '    <span class="section-meta">独立追加块 / Non-ranking</span>';
+      html += '  </div>';
+      html += '  <div class="episodic-item-row" style="white-space:pre-wrap;font-size:12px;color:var(--text-dim);padding:10px 16px;">' + esc(data.them.content) + '</div>';
+      html += '</div>';
+    }
+
+    // 分段卡片
+    var sections = data.sections || [];
+    if (!sections.length) {
+      html += '<div class="loading">暂无浮现记忆</div>';
+    } else {
+      sections.forEach(function(sec) {
+        var items = sec.items || [];
+        var omittedText = sec.omitted > 0 ? ' <span style="color:#E53E3E;margin-left:6px;">(超额省略 ' + sec.omitted + ' 条)</span>' : '';
+        var clusterText = sec.total_clusters ? ' · ' + sec.total_clusters + ' 个主题簇' : '';
+
+        html += '<div class="episodic-section-card">';
+        html += '  <div class="episodic-section-header">';
+        html += '    <i data-lucide="' + escAttr(sec.icon || 'layers') + '"></i> ' + esc(sec.title);
+        html += '    <span class="section-meta">' + items.length + ' 条 · 约 ' + (sec.tokens || 0) + ' tokens' + clusterText + omittedText + '</span>';
+        html += '  </div>';
+
+        if (!items.length) {
+          html += '  <div style="padding:10px 16px;color:var(--text-light);font-size:12px;font-style:italic;">(此分层暂无匹配记忆)</div>';
+        } else {
+          items.forEach(function(item) {
+            var title = item.name || item.text || item.content || item.id || '未命名条目';
+            var idBadge = item.id ? '<code style="font-size:10px;color:var(--text-dim);">' + esc(item.id) + '</code>' : '';
+            var tokensBadge = item.tokens != null ? '<span style="font-size:11px;color:var(--text-dim);font-family:monospace;">~' + item.tokens + ' tk</span>' : '';
+
+            var extraBadges = [];
+            if (item.source) {
+              extraBadges.push('<span class="breath-cluster-tag" style="background:rgba(14,165,233,0.1);color:#0284c7;">' + esc(item.source) + (item.aspect ? ':' + esc(item.aspect) : '') + '</span>');
+            }
+            if (item.status) {
+              extraBadges.push('<span class="tier-badge" style="background:rgba(0,0,0,0.06);color:var(--text-dim);">' + esc(item.status) + '</span>');
+            }
+            if (item.cluster_id) {
+              extraBadges.push('<span class="breath-cluster-tag">簇: ' + esc(item.cluster_id) + '</span>');
+            }
+            if (item.tier) {
+              var tierClass = item.tier === 'full' ? 'tier-full' : (item.tier === 'mid' ? 'tier-mid' : 'tier-faint');
+              var tierLabel = item.tier_label || (item.tier === 'full' ? '清晰' : (item.tier === 'mid' ? '有点模糊' : '很淡了'));
+              extraBadges.push('<span class="tier-badge ' + tierClass + '">' + esc(tierLabel) + '</span>');
+            }
+            if (item.ago) {
+              extraBadges.push('<span class="tier-badge" style="background:rgba(245,158,11,0.1);color:#b45309;">' + esc(item.ago) + '前</span>');
+            }
+            if (item.score != null) {
+              extraBadges.push('<span style="font-size:10px;color:var(--text-dim);font-family:monospace;">分值:' + Number(item.score).toFixed(2) + '</span>');
+            }
+            if (item.emotion) {
+              extraBadges.push('<span style="font-size:10px;color:var(--text-light);">' + esc(item.emotion) + '</span>');
+            }
+
+            html += '  <div class="episodic-item-row">';
+            html += '    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+            html += '      <strong style="color:var(--text);font-size:12px;">' + esc(title) + '</strong>';
+            if (extraBadges.length) html += extraBadges.join(' ');
+            html += '      <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">' + tokensBadge + ' ' + idBadge + '</span>';
+            html += '    </div>';
+            if (item.content && item.content !== title) {
+              html += '    <div style="color:var(--text-dim);font-size:11px;margin-top:2px;white-space:pre-wrap;">' + esc(item.content) + '</div>';
+            } else if (item.text && item.text !== title && !item.text.startsWith('=== ')) {
+              var snippet = item.text.trim();
+              if (snippet.length > 120) snippet = snippet.slice(0, 117) + '…';
+              html += '    <div style="color:var(--text-dim);font-size:11px;margin-top:2px;white-space:pre-wrap;">' + esc(snippet) + '</div>';
+            }
+            html += '  </div>';
+          });
+        }
+        html += '</div>';
+      });
+    }
+
+    // 折叠显示 Raw Context
+    if (data.raw_text) {
+      html += '<details class="breath-raw-details">';
+      html += '  <summary><i data-lucide="code" style="vertical-align:-2px;"></i> AI 实际注入上下文预览 (Raw Context) - ' + (data.raw_text.length) + ' 字符</summary>';
+      html += '  <pre>' + esc(data.raw_text) + '</pre>';
+      html += '</details>';
+    }
+
+    results.innerHTML = html;
+    if (window.lucide) lucide.createIcons();
   } catch (e) {
     results.innerHTML = '<div class="loading">请求失败: ' + esc(e.message) + '</div>';
   }
 }
 
-document.getElementById('breath-query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') runBreathDebug();
-});
+var _breathQueryInput = document.getElementById('breath-query');
+if (_breathQueryInput) {
+  _breathQueryInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') runBreathDebug();
+  });
+}
 
 // ===== Embedding 后端摘要 + 迁移 =====
 async function refreshEmbInfo() {
@@ -8057,6 +8367,8 @@ async function loadConfig() {
         : '裸机部署：保存后<b>重启服务</b>即监听新端口（留空=默认 18001）。';
     }
     var sf = cfg.surfacing || {};
+    if (document.getElementById('cfg-sf-style')) document.getElementById('cfg-sf-style').value = sf.style || 'classic';
+    if (document.getElementById('cfg-sf-shadow-episodic')) document.getElementById('cfg-sf-shadow-episodic').checked = !!sf.shadow_episodic;
     document.getElementById('cfg-sf-breath-results').value = sf.breath_max_results || 20;
     document.getElementById('cfg-sf-breath-tokens').value = sf.breath_max_tokens || 20000;
     document.getElementById('cfg-sf-feel-tokens').value = sf.feel_max_tokens || 15000;
@@ -8353,6 +8665,8 @@ async function saveConfig(persist) {
     },
     merge_threshold: Number.isFinite(mergeThreshold) ? mergeThreshold : 75,
     surfacing: {
+      style: document.getElementById('cfg-sf-style') ? document.getElementById('cfg-sf-style').value : 'classic',
+      shadow_episodic: document.getElementById('cfg-sf-shadow-episodic') ? document.getElementById('cfg-sf-shadow-episodic').checked : false,
       breath_max_results: parseInt(document.getElementById('cfg-sf-breath-results').value) || 20,
       breath_max_tokens: parseInt(document.getElementById('cfg-sf-breath-tokens').value) || 20000,
       feel_max_tokens: parseInt(document.getElementById('cfg-sf-feel-tokens').value) || 15000,

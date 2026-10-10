@@ -405,6 +405,66 @@ def register(mcp) -> None:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
+        mode = (request.query_params.get("mode") or "auto").strip().lower()
+        style = (request.query_params.get("style") or "").strip().lower()
+        try:
+            max_results = int(request.query_params.get("max_results") or 0)
+        except (TypeError, ValueError):
+            max_results = 0
+        try:
+            max_tokens = int(request.query_params.get("max_tokens") or 0)
+        except (TypeError, ValueError):
+            max_tokens = 0
+
+        sf_cfg = sh.config.get("surfacing") or {}
+        if max_results <= 0:
+            max_results = int(sf_cfg.get("breath_max_results") or 20)
+        if max_tokens <= 0:
+            max_tokens = int(sf_cfg.get("breath_max_tokens") or 20000)
+
+        configured_style = str(sf_cfg.get("style") or "classic").strip().lower()
+        target_style = style or (mode if mode in ("episodic", "classic") else configured_style)
+        is_search = mode == "search" or (bool(query.strip()) and mode not in ("episodic", "classic"))
+
+        if not is_search:
+            try:
+                from tools.breath.episodic import surface_episodic
+                from tools.breath.surface import _surface_classic
+
+                if target_style == "episodic":
+                    data = await surface_episodic(
+                        max_results=max_results,
+                        max_tokens=max_tokens,
+                        tag_filter=[],
+                        inspect=True,
+                    )
+                else:
+                    data = await _surface_classic(
+                        max_results=max_results,
+                        max_tokens=max_tokens,
+                        tag_filter=[],
+                        inspect=True,
+                    )
+
+                if isinstance(data, dict):
+                    data["effective_style"] = configured_style
+                    data["shadow_episodic"] = bool(sf_cfg.get("shadow_episodic", False))
+                    service = getattr(sh, "them_service", None)
+                    if service is not None:
+                        try:
+                            them_block = await service.surface()
+                            if them_block:
+                                data["them"] = {
+                                    "title": "对他人的认识",
+                                    "content": them_block,
+                                }
+                        except Exception:
+                            pass
+                    return JSONResponse(data)
+            except Exception as e:
+                logger.error(f"Breath debug surface inspection failed: {e}", exc_info=True)
+                return JSONResponse({"error": str(e)}, status_code=500)
+
         try:
             all_buckets = await sh.bucket_mgr.list_all(include_archive=False)
             results = []
@@ -466,6 +526,7 @@ def register(mcp) -> None:
             results.sort(key=lambda x: x["normalized"], reverse=True)
             passed = [r for r in results if r["passed_threshold"]]
             return JSONResponse({
+                "mode": "search",
                 "query": query,
                 "valence": q_valence,
                 "arousal": q_arousal,

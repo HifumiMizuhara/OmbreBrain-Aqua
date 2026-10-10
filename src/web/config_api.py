@@ -298,6 +298,8 @@ def register(mcp) -> None:
                 ],
             },
             "surfacing": {
+                "style": str(sh.config.get("surfacing", {}).get("style") or "classic"),
+                "shadow_episodic": bool(sh.config.get("surfacing", {}).get("shadow_episodic", False)),
                 "breath_max_results": int(sh.config.get("surfacing", {}).get("breath_max_results") or 20),
                 "breath_max_tokens": int(sh.config.get("surfacing", {}).get("breath_max_tokens") or 20000),
                 "feel_max_tokens": int(sh.config.get("surfacing", {}).get("feel_max_tokens") or 15000),
@@ -466,7 +468,7 @@ def register(mcp) -> None:
                         )
                 timezone_value = raw_tz
 
-            surfacing_values: dict[str, int] = {}
+            surfacing_values: dict[str, int | str | bool] = {}
             surfacing_payload = body.get("surfacing") or {}
             for key, low, high in (
                 ("breath_max_results", 1, 50),
@@ -477,6 +479,18 @@ def register(mcp) -> None:
                     surfacing_values[key] = _bounded_config_int(
                         surfacing_payload[key], f"surfacing.{key}", low, high
                     )
+            if "style" in surfacing_payload:
+                raw_style = str(surfacing_payload["style"] or "").strip().lower()
+                if raw_style not in ("classic", "episodic"):
+                    return JSONResponse(
+                        {"error": "surfacing.style must be 'classic' or 'episodic'"},
+                        status_code=400,
+                    )
+                surfacing_values["style"] = raw_style
+            if "shadow_episodic" in surfacing_payload:
+                surfacing_values["shadow_episodic"] = _parse_bool(
+                    surfacing_payload["shadow_episodic"]
+                )
             deployment_payload = body.get("deployment")
             if "deployment" in body and not isinstance(deployment_payload, dict):
                 return JSONResponse(

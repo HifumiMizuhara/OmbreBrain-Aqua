@@ -136,7 +136,8 @@ async def surface_episodic(
     tag_filter: list,
     created_from: "datetime | None" = None,
     created_to: "datetime | None" = None,
-) -> "str | None":
+    inspect: bool = False,
+) -> "str | dict | None":
     from .surface import _can_surface, _created_at  # 避免循环导入
 
     try:
@@ -156,7 +157,7 @@ async def surface_episodic(
     budget = max_tokens
 
     # --- 核心准则：与 classic 一致 ---
-    core_parts, core_omitted = [], 0
+    core_parts, core_items, core_omitted = [], [], 0
     for b in all_buckets:
         m = b["metadata"]
         if not (m.get("pinned") or m.get("type") == "permanent"):
@@ -172,10 +173,19 @@ async def surface_episodic(
             core_omitted += 1
             continue
         core_parts.append(text)
+        if inspect:
+            core_items.append({
+                "id": b["id"],
+                "name": _title(b),
+                "tokens": cost,
+                "text": text,
+                "pinned": bool(m.get("pinned")),
+                "type": m.get("type", "dynamic"),
+            })
         budget -= cost
 
     # --- 核心认知（I 与 You，紧凑一行流）---
-    cognition_parts = []
+    cognition_parts, cognition_items = [], []
     try:
         from ..i.core import is_pending_candidate, _aspect_of
         i_items = [
@@ -193,7 +203,16 @@ async def surface_episodic(
             body = (b.get("content") or "").strip().splitlines()[0]
             if len(body) > 45:
                 body = body[:43] + "…"
-            cognition_parts.append(f"- [I:{aspect}] {body} [id:{b['id']}]")
+            line = f"- [I:{aspect}] {body} [id:{b['id']}]"
+            cognition_parts.append(line)
+            if inspect:
+                cognition_items.append({
+                    "id": b["id"],
+                    "source": "I",
+                    "aspect": aspect,
+                    "content": body,
+                    "tokens": count_tokens_approx(line),
+                })
     except Exception as e:
         rt.logger.warning(f"episodic I extraction failed: {e}")
 
@@ -219,12 +238,22 @@ async def surface_episodic(
                 if len(content) > 45:
                     content = content[:43] + "…"
                 status_mark = " (已生效)" if c.lifecycle == "formal" else " (观察中)"
-                cognition_parts.append(f"- [You:{aspect_label}] {content}{status_mark} [id={c.id}]")
+                line = f"- [You:{aspect_label}] {content}{status_mark} [id={c.id}]"
+                cognition_parts.append(line)
+                if inspect:
+                    cognition_items.append({
+                        "id": c.id,
+                        "source": "You",
+                        "aspect": aspect_label,
+                        "content": content,
+                        "status": "已生效" if c.lifecycle == "formal" else "观察中",
+                        "tokens": count_tokens_approx(line),
+                    })
     except Exception as e:
         rt.logger.warning(f"episodic You extraction failed: {e}")
 
     # --- 活跃待办（Active Plans，紧凑一行流）---
-    plan_parts = []
+    plan_parts, plan_items = [], []
     try:
         import re
         plans = [
@@ -246,7 +275,15 @@ async def surface_episodic(
             if len(desc) > 35:
                 desc = desc[:33] + "…"
             date_str = f" ({created})" if created else ""
-            plan_parts.append(f"- [id:{b['id']}] 《{desc}》{date_str}")
+            line = f"- [id:{b['id']}] 《{desc}》{date_str}"
+            plan_parts.append(line)
+            if inspect:
+                plan_items.append({
+                    "id": b["id"],
+                    "name": desc,
+                    "created": created,
+                    "tokens": count_tokens_approx(line),
+                })
     except Exception as e:
         rt.logger.warning(f"episodic plans extraction failed: {e}")
 
@@ -271,7 +308,7 @@ async def surface_episodic(
     section_budget = budget
 
     # --- 接上次：最近 1~2 条写入 ---
-    last_parts: list[str] = []
+    last_parts, last_items = [], []
     stamped = sorted(
         ((written_at(b), b) for b in pool if written_at(b) is not None),
         key=lambda x: (x[0], x[1]["id"]),
@@ -286,12 +323,20 @@ async def surface_episodic(
         if cost > last_cap:
             continue
         last_parts.append(text)
+        if inspect:
+            last_items.append({
+                "id": b["id"],
+                "name": _title(b),
+                "ago": _hours_ago(t, now),
+                "tokens": cost,
+                "text": text,
+            })
         shown.add(b["id"])
         last_cap -= cost
         budget -= cost
 
     # --- 今天（复用 P2）---
-    today_parts, today_omitted = [], 0
+    today_parts, today_items, today_omitted = [], [], 0
     tcfg = today_config(surfacing_cfg)
     if tcfg["enabled"]:
         tcfg = dict(tcfg, max_tokens=min(tcfg["max_tokens"], int(section_budget * 0.3)))
@@ -300,6 +345,8 @@ async def surface_episodic(
         )
         shown |= today_shown
         budget -= used
+        if inspect:
+            today_items = [{"text": p, "tokens": count_tokens_approx(p)} for p in today_parts]
 
     # --- 挂在心上：未解决、按分数、簇去重、分档 ---
     recall_reserve = int(section_budget * 0.15)
@@ -320,10 +367,11 @@ async def surface_episodic(
         picked.append(b)
         if len(picked) >= max_results:
             break
-    mind_parts, mind_omitted = [], 0
+    mind_parts, mind_items, mind_omitted = [], [], 0
     n = len(picked)
     for i, b in enumerate(picked):
         tier = "full" if i < n * _FULL_RATIO else ("mid" if i < n * _MID_RATIO else "faint")
+        c = cluster_of.get(b["id"], b["id"])
         try:
             text, cost = _tier_render(b, tier, footprint)
         except Exception:
@@ -332,12 +380,25 @@ async def surface_episodic(
             mind_omitted += 1
             continue
         mind_parts.append(text)
+        if inspect:
+            mind_items.append({
+                "id": b["id"],
+                "name": _title(b),
+                "tier": tier,
+                "tier_label": "清晰" if tier == "full" else ("有点模糊" if tier == "mid" else "很淡了"),
+                "score": round(rt.decay_engine.calculate_score(b["metadata"]), 3),
+                "cluster_id": c,
+                "emotion": emotion_word(b["metadata"]),
+                "why_remembered": str(b["metadata"].get("why_remembered") or "").strip(),
+                "tokens": cost,
+                "text": text,
+            })
         shown.add(b["id"])
         mind_budget -= cost
     budget = mind_budget + recall_reserve
 
     # --- 忽然想起：久未浮现（<=2）+ 3% 偶遇，合并为一段 ---
-    recall_parts: list[str] = []
+    recall_parts, recall_items = [], []
     min_age = 24 * 3600
     stale = []
     for b in pool:
@@ -366,10 +427,19 @@ async def surface_episodic(
         tier_text, cost = _tier_render(b, "mid", footprint)
         if cost > budget:
             continue
-        recall_parts.append(f"💤 {tier_text}")
+        line = f"💤 {tier_text}"
+        recall_parts.append(line)
+        if inspect:
+            recall_items.append({
+                "id": b["id"],
+                "name": _title(b),
+                "tokens": cost,
+                "text": line,
+            })
         budget -= cost
 
-    if not (core_parts or cognition_parts or plan_parts or last_parts or today_parts or mind_parts or recall_parts):
+    has_content = bool(core_parts or cognition_parts or plan_parts or last_parts or today_parts or mind_parts or recall_parts)
+    if not has_content and not inspect:
         return None
 
     parts = []
@@ -394,4 +464,83 @@ async def surface_episodic(
         parts.append(f"token 预算不足：{mind_omitted} 条挂在心上的记忆因放不下未返回；已返回的「清晰」条目正文未截断。")
     hint = "想细看哪件事，breath_search(query=\"完整 bucket_id\") 取全文；待办完成用 trace(id, status=\"resolved\")。"
     parts.append(hint)
-    return "\n\n".join(parts)
+    raw_result = "\n\n".join(parts) if has_content else ""
+
+    if inspect:
+        return {
+            "mode": "episodic",
+            "style": "episodic",
+            "raw_text": raw_result,
+            "budget": {
+                "max_tokens": max_tokens,
+                "used_tokens": max(0, max_tokens - budget),
+                "remaining_tokens": max(0, budget),
+            },
+            "sections": [
+                {
+                    "id": "core",
+                    "title": "核心准则",
+                    "icon": "pin",
+                    "tokens": sum(x["tokens"] for x in core_items),
+                    "omitted": core_omitted,
+                    "items": core_items,
+                },
+                {
+                    "id": "cognition",
+                    "title": "核心认知",
+                    "icon": "user",
+                    "tokens": sum(x["tokens"] for x in cognition_items),
+                    "omitted": 0,
+                    "items": cognition_items,
+                },
+                {
+                    "id": "plans",
+                    "title": "活跃待办",
+                    "icon": "calendar",
+                    "tokens": sum(x["tokens"] for x in plan_items),
+                    "omitted": 0,
+                    "items": plan_items,
+                },
+                {
+                    "id": "last",
+                    "title": "接上次",
+                    "icon": "link-2",
+                    "tokens": sum(x["tokens"] for x in last_items),
+                    "omitted": 0,
+                    "items": last_items,
+                },
+                {
+                    "id": "today",
+                    "title": "今天",
+                    "icon": "sun",
+                    "tokens": sum(x["tokens"] for x in today_items),
+                    "omitted": today_omitted,
+                    "items": today_items,
+                },
+                {
+                    "id": "mind",
+                    "title": "挂在心上",
+                    "icon": "heart",
+                    "tokens": sum(x["tokens"] for x in mind_items),
+                    "omitted": mind_omitted,
+                    "total_clusters": len(set(cluster_of.values())) if 'cluster_of' in locals() else 0,
+                    "items": mind_items,
+                },
+                {
+                    "id": "recall",
+                    "title": "忽然想起",
+                    "icon": "moon",
+                    "tokens": sum(x["tokens"] for x in recall_items),
+                    "omitted": 0,
+                    "items": recall_items,
+                },
+            ],
+            "omissions": {
+                "core": core_omitted,
+                "today": today_omitted,
+                "mind": mind_omitted,
+            },
+            "hints": hint,
+        }
+
+    return raw_result or None

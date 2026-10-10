@@ -39,11 +39,16 @@ from datetime import datetime, timedelta
 from ombrebrain.policy.surfacing import SurfacePolicyVM
 from .. import _runtime as rt
 from ..plan.core import is_letter_bucket
-from utils import parse_bool, parse_iso_datetime
+from utils import count_tokens_approx, parse_bool, parse_iso_datetime
 from ._date_range import bucket_in_created_range
 from ._shared import bucket_has_tags, footprint_reader, render_within_budget
 from ._verbatim import render_stored_bucket
 from .today import render_today, today_config
+
+
+def _title(b: dict) -> str:
+    m = b.get("metadata") or {}
+    return str(m.get("title") or m.get("name") or b["id"]).strip()
 
 # U-07 fix: throttle the sampling-fallback INFO log to once per 5 minutes.
 # 库小且 sampling=ON 时此分支每次 breath 都触发，原本会刷屏；改为 ≥300s
@@ -270,11 +275,21 @@ async def _surface_classic(
     tag_filter: list,
     created_from: "datetime | None" = None,
     created_to: "datetime | None" = None,
-) -> str:
+    inspect: bool = False,
+) -> "str | dict":
     try:
         all_buckets = await rt.bucket_mgr.list_all(include_archive=False)
     except Exception as e:
         rt.logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
+        if inspect:
+            return {
+                "mode": "classic",
+                "style": "classic",
+                "raw_text": "记忆系统暂时无法访问。",
+                "budget": {"max_tokens": max_tokens, "used_tokens": 0, "remaining_tokens": max_tokens},
+                "sections": [],
+                "omissions": {"core": 0, "today": 0, "surfaced": 0},
+            }
         return "记忆系统暂时无法访问。"
 
     # 3.6.0：无 query 的浮现路径此前完全不认 date_from/date_to——参数收下了、
@@ -310,7 +325,7 @@ async def _surface_classic(
     core_filter_notice = ""
     if tag_filter and pinned_buckets:
         core_filter_notice = "[说明：tags 仅过滤普通浮现记忆；核心准则按设计始终注入。]"
-    pinned_results = []
+    pinned_results, pinned_items = [], []
     token_budget = max_tokens
     pinned_omitted = 0
     pinned_required_tokens = 0
@@ -326,6 +341,15 @@ async def _surface_classic(
                 pinned_omitted += 1
                 continue
             pinned_results.append(rendered)
+            if inspect:
+                pinned_items.append({
+                    "id": b["id"],
+                    "name": _title(b),
+                    "tokens": entry_tokens,
+                    "text": rendered,
+                    "pinned": bool(b["metadata"].get("pinned")),
+                    "type": b["metadata"].get("type", "dynamic"),
+                })
             token_budget -= entry_tokens
         except Exception as e:
             rt.logger.warning(f"Failed to render pinned bucket / 钉选桶渲染失败: {e}")
@@ -502,7 +526,7 @@ async def _surface_classic(
     )
     candidates = candidates[:max_results]
 
-    dynamic_results = []
+    dynamic_results, dynamic_items = [], []
     dynamic_omitted = 0
     # 曾经这里是 `if not pinned_omitted:`——一条核心准则装不下，普通浮现
     # 整个循环一次都不跑。那个门什么也没保护到：pinned 在上面已经先渲染完
@@ -521,42 +545,67 @@ async def _surface_classic(
                 dynamic_omitted += 1
                 continue
             dynamic_results.append(rendered)
+            if inspect:
+                dynamic_items.append({
+                    "id": b["id"],
+                    "name": _title(b),
+                    "score": round(score, 3),
+                    "tokens": entry_tokens,
+                    "text": rendered,
+                })
             token_budget -= entry_tokens
         except Exception as e:
             rt.logger.warning(f"Failed to render surfaced bucket / 浮现渲染失败: {e}")
             continue
 
     if not pinned_results and not dynamic_results and not today_results:
+        notice = ""
         if pinned_omitted:
-            return _pin_budget_notice(
+            notice = _pin_budget_notice(
                 required=pinned_required_tokens,
                 limit=max_tokens,
                 omitted=pinned_omitted,
             )
-        if dynamic_omitted:
-            return _budget_notice(
+        elif dynamic_omitted:
+            notice = _budget_notice(
                 omitted=dynamic_omitted,
                 used=max_tokens - token_budget,
                 limit=max_tokens,
             )
-        if rt.mark_op:
-            rt.mark_op("breath_empty")
-        stats = await rt.bucket_mgr.get_stats()
-        total = stats.get("permanent_count", 0) + stats.get("dynamic_count", 0)
-        if total == 0:
-            return (
-                "我的记忆池现在是空的。\n"
-                "想给我留点种子？用 hold(content=\"...\") 写下第一条；\n"
-                "或者 grow(content=\"...\") 把一段长对话/日记一次性灌给我。"
-            )
-        return (
-            "权重池暂时平静——我手上没什么需要主动浮现的东西。\n"
-            "可以试试 breath_search(query=\"想找的关键词\") 走检索，\n"
-            "或者 dream() 让我自己挑几段最近的记忆嚼一嚼。"
-        )
+        else:
+            if rt.mark_op:
+                rt.mark_op("breath_empty")
+            stats = await rt.bucket_mgr.get_stats()
+            total = stats.get("permanent_count", 0) + stats.get("dynamic_count", 0)
+            if total == 0:
+                notice = (
+                    "我的记忆池现在是空的。\n"
+                    "想给我留点种子？用 hold(content=\"...\") 写下第一条；\n"
+                    "或者 grow(content=\"...\") 把一段长对话/日记一次性灌给我。"
+                )
+            else:
+                notice = (
+                    "权重池暂时平静——我手上没什么需要主动浮现的东西。\n"
+                    "可以试试 breath_search(query=\"想找的关键词\") 走检索，\n"
+                    "或者 dream() 让我自己挑几段最近的记忆嚼一嚼。"
+                )
+        if inspect:
+            return {
+                "mode": "classic",
+                "style": "classic",
+                "raw_text": notice,
+                "budget": {
+                    "max_tokens": max_tokens,
+                    "used_tokens": max(0, max_tokens - token_budget),
+                    "remaining_tokens": max(0, token_budget),
+                },
+                "sections": [],
+                "omissions": {"core": pinned_omitted, "today": today_omitted, "surfaced": dynamic_omitted},
+            }
+        return notice
 
     # --- iter 1.6 §7: passive association ---
-    passive_results: list[str] = []
+    passive_results, passive_items = [], []
     try:
         now = datetime.now()
         seven_days_ago = now - timedelta(days=7)
@@ -604,6 +653,13 @@ async def _surface_classic(
                     if entry_tokens > token_budget:
                         continue
                     passive_results.append(rendered)
+                    if inspect:
+                        passive_items.append({
+                            "id": b["id"],
+                            "name": _title(b),
+                            "tokens": entry_tokens,
+                            "text": rendered,
+                        })
                     token_budget -= entry_tokens
                 except Exception as e:
                     rt.logger.warning(f"passive association render failed: {e}")
@@ -613,7 +669,7 @@ async def _surface_classic(
     # --- 3% 偶遇：从 resolved 池随机浮现 1~3 条沉底记忆 (iter 2.1) ---
     # 设计意图：让已解决的记忆有小概率重新出现，制造"忽然想起"的温度。
     # 与无结果兜底逻辑并存；不替换主流程。
-    dream_results: list[str] = []
+    dream_results, dream_items = [], []
     if not dynamic_omitted and random.random() < 0.03:
         try:
             shown_ids = {b["id"] for b in candidates}
@@ -642,6 +698,13 @@ async def _surface_classic(
                         if entry_tokens > token_budget:
                             continue
                         dream_results.append(rendered)
+                        if inspect:
+                            dream_items.append({
+                                "id": b["id"],
+                                "name": _title(b),
+                                "tokens": entry_tokens,
+                                "text": rendered,
+                            })
                         token_budget -= entry_tokens
                         rt.logger.info(f"Dream surface triggered / 偶遇机制触发: {b['id']}")
                     except Exception as e:
@@ -681,7 +744,68 @@ async def _surface_classic(
                 limit=max_tokens,
             )
         )
-    return "\n\n".join(parts)
+    raw_str = "\n\n".join(parts)
+
+    if inspect:
+        return {
+            "mode": "classic",
+            "style": "classic",
+            "raw_text": raw_str,
+            "budget": {
+                "max_tokens": max_tokens,
+                "used_tokens": max(0, max_tokens - token_budget),
+                "remaining_tokens": max(0, token_budget),
+            },
+            "sections": [
+                {
+                    "id": "core",
+                    "title": "核心准则",
+                    "icon": "pin",
+                    "tokens": sum(x["tokens"] for x in pinned_items),
+                    "omitted": pinned_omitted,
+                    "items": pinned_items,
+                },
+                {
+                    "id": "today",
+                    "title": "今天",
+                    "icon": "sun",
+                    "tokens": sum(count_tokens_approx(p) for p in today_results),
+                    "omitted": today_omitted,
+                    "items": [{"text": p, "tokens": count_tokens_approx(p)} for p in today_results],
+                },
+                {
+                    "id": "surfaced",
+                    "title": "浮现记忆",
+                    "icon": "sparkles",
+                    "tokens": sum(x["tokens"] for x in dynamic_items),
+                    "omitted": dynamic_omitted,
+                    "items": dynamic_items,
+                },
+                {
+                    "id": "passive",
+                    "title": "久未浮现",
+                    "icon": "moon",
+                    "tokens": sum(x["tokens"] for x in passive_items),
+                    "omitted": 0,
+                    "items": passive_items,
+                },
+                {
+                    "id": "dream",
+                    "title": "偶然想起",
+                    "icon": "sparkle",
+                    "tokens": sum(x["tokens"] for x in dream_items),
+                    "omitted": 0,
+                    "items": dream_items,
+                },
+            ],
+            "omissions": {
+                "core": pinned_omitted,
+                "today": today_omitted,
+                "surfaced": dynamic_omitted,
+            },
+        }
+
+    return raw_str
 
 
 _ID_RE = re.compile(r"\[bucket_id:([^\]]+)\]|\[ids: ([^\]]+)\]")
@@ -700,7 +824,8 @@ async def surface_default(
     tag_filter: list,
     created_from: "datetime | None" = None,
     created_to: "datetime | None" = None,
-) -> str:
+    inspect: bool = False,
+) -> "str | dict":
     """无参浮现入口。按 surfacing.style 分流：classic（默认）或 episodic（3.9.0）。
 
     shadow_episodic=true 且 style=classic 时，仍输出 classic，同时计算 episodic，
@@ -712,14 +837,14 @@ async def surface_default(
     style = str(cfg.get("style") or "classic").strip().lower()
     args = (max_results, max_tokens, tag_filter, created_from, created_to)
     if style == "episodic":
-        out = await episodic.surface_episodic(*args)
+        out = await episodic.surface_episodic(*args, inspect=inspect)
         if out is not None:
             return out
-    result = await _surface_classic(*args)
-    if style != "episodic" and parse_bool(cfg.get("shadow_episodic"), default=False):
+    result = await _surface_classic(*args, inspect=inspect)
+    if not inspect and style != "episodic" and parse_bool(cfg.get("shadow_episodic"), default=False):
         try:
             shadow = await episodic.surface_episodic(*args)
-            a, b = _ids_in(result), _ids_in(shadow or "")
+            a, b = _ids_in(result if isinstance(result, str) else ""), _ids_in(shadow or "")
             rt.logger.info(
                 f"shadow_episodic: classic={len(a)} episodic={len(b)} both={len(a & b)} "
                 f"only_classic={sorted(a - b)[:20]} only_episodic={sorted(b - a)[:20]}"
