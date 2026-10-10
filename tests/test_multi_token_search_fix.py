@@ -1,6 +1,5 @@
 import pytest
 from bucket_manager import BucketManager
-from ombrebrain.retrieval.bucket_scoring import calc_topic_score
 
 
 def _make_bucket(bucket_id: str, content: str, name: str = "", importance: int = 6):
@@ -77,10 +76,10 @@ async def test_multi_token_space_query_recalls_single_matching_token():
 
 
 @pytest.mark.asyncio
-async def test_top_k_vector_recall_allows_sub_threshold_similarity():
-    """验证即使余弦相似度未达到 0.55，只要处于 Top-3 且 >= 0.40，也能获得语义保底放行。"""
-    sub_threshold_bucket = _make_bucket(
-        "b_sub",
+async def test_multi_token_literal_hit_recalls_with_sub_threshold_similarity():
+    """验证多词查询只要字面命中有效分词，即使向量相似度未达纯语义门槛，也能通过字面放行成功召回。"""
+    bucket = _make_bucket(
+        "b_tea",
         content="平时休息时喜欢在安静的茶室喝白茶和乌龙茶。",
         name="茶饮习惯",
         importance=5,
@@ -104,26 +103,49 @@ async def test_top_k_vector_recall_allows_sub_threshold_similarity():
     bm.embedding_engine = None
 
     async def fake_list_all(include_archive=False):
-        return [sub_threshold_bucket]
+        return [bucket]
 
     bm.list_all = fake_list_all
 
-    # 向量相似度为 0.48（低于 0.55）
-    vector_scores = {"b_sub": 0.48}
-    results = await bm.search("饮品偏好", vector_scores=vector_scores)
+    # 向量相似度仅为 0.40（低于纯语义门槛 0.55），但查询包含“乌龙茶”（分词命中）
+    vector_scores = {"b_tea": 0.40}
+    results = await bm.search("咖啡 乌龙茶", vector_scores=vector_scores)
     result_ids = [r["id"] for r in results]
 
-    assert "b_sub" in result_ids, "排名前 3 且相似度达到 0.48 的桶应通过语义保底进入结果池"
+    assert "b_tea" in result_ids, "多词查询中命中分词'乌龙茶'的桶应通过字面放行进入结果池"
 
 
-def test_token_aware_topic_scoring_does_not_penalize_multi_token_partial_matches():
-    """验证多词查询在单字段匹配时不会因为空格和未出现的子词被严重惩罚。"""
+@pytest.mark.asyncio
+async def test_multi_token_search_recalls_when_only_one_token_present():
+    """验证多词查询（如'拿铁 咖啡'）在只有部分词（如'咖啡'）出现时，能够通过字面拆分成功召回。"""
     bucket = _make_bucket(
-        "b1",
+        "b_coffee",
         content="慢岛咖啡馆的手冲深度烘焙",
-        name="咖啡常去地点",
+        name="常去地点",
+        importance=5,
     )
-    score_multi = calc_topic_score("拿铁 咖啡", bucket)
+    bm = BucketManager.__new__(BucketManager)
+    bm.max_results = 5
+    bm.fuzzy_threshold = 50
+    bm.vector_recall_threshold = 0.55
+    bm.w_topic = 4.0
+    bm.w_emotion = 2.0
+    bm.w_time = 1.5
+    bm.w_importance = 1.0
+    bm.w_touch = 1.0
+    bm.w_semantic = 2.5
+    bm.w_bm25 = 1.5
+    bm.content_weight = 1.0
+    bm._bm25 = None
+    bm._bm25_dirty = False
+    bm._bm25_rebuilding = False
+    bm.embedding_engine = None
 
-    # 优化前仅有 0.18 左右（单词被未命中词严重稀释），优化后即便只命中“咖啡”，得分亦有显著提升（>= 0.35）
-    assert score_multi >= 0.35, f"多词查询中的'咖啡'得分应有保障，实际为 {score_multi}"
+    async def fake_list_all(include_archive=False):
+        return [bucket]
+
+    bm.list_all = fake_list_all
+
+    results = await bm.search("拿铁 咖啡")
+    result_ids = [r["id"] for r in results]
+    assert "b_coffee" in result_ids, "仅包含'咖啡'的桶在多词查询'拿铁 咖啡'下应被成功召回"

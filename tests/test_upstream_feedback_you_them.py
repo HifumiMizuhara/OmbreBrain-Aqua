@@ -121,13 +121,18 @@ async def test_them_rejection_says_which_field_tripped():
 @pytest.mark.asyncio
 async def test_you_bare_read_lists_what_it_is_still_accumulating():
     service = _you()
-    await service.write(
+    claim, _ = await service.write(
         content="他要我直接讲结论，别铺垫",
         bucket_ids=["memory-1", "memory-2"],
         aspect="communication_preference",
         concept_key="reply_style",
         concept_value="direct",
         basis="observed_pattern",
+    )
+    from dataclasses import replace
+    service.store.put_claim(
+        replace(claim, lifecycle="candidate", review_receipts=()),
+        expected_revision=claim.revision,
     )
 
     read = await service.recall()

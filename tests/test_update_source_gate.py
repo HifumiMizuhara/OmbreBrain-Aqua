@@ -144,14 +144,15 @@ def test_legacy_archive_compatibility_requires_284_release_lock():
     为什么值得跨这条线：`zoneinfo` 只查宿主机的 IANA 库，`python:*-slim` 与
     Windows 都没有。缺了它 `utils.get_tzinfo()` 会静默兜底成固定 +08:00——
     配 America/New_York 的用户拿到东八区的解锁时间，且没有任何提示。
-    详见 3.6.1 的 CHANGELOG。
+    2026-10-10（3.9.2）：修复 pyjwt==2.13.0 安全漏洞（PYSEC-2026-4140~4183），
+    推进 UV_EXCLUDE_NEWER 到 2026-10-01，升级 pyjwt==2.15.1 及 mcp==1.30.0 等。
     """
     repo_root = Path(meta.__file__).resolve().parents[2]
     lock_bytes = (repo_root / "requirements.lock.txt").read_bytes()
     normalized = lock_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
     assert hashlib.sha256(normalized).hexdigest() == (
-        "ae0255bd41e5ceb45694244017a9b0b2dc1e4c445ab027cec1f7183ad969700a"
+        "d8d3e62c0ebc0a5740974471c37a95622554730bea6d7d64123f1bbfe592f20f"
     ), (
         "requirements.lock.txt 已变化：确认这次变化是否会影响还没升级过的旧版"
         "热更新器（尤其 v2.8.4 之前、缺少 lock 感知回退逻辑的实例），评估后再把"
@@ -303,7 +304,7 @@ def test_runtime_lock_probe_accepts_repository_release_lock_syntax(monkeypatch):
     lock = (repo_root / "requirements.lock.txt").read_bytes()
 
     assert meta._runtime_satisfies_locked_versions(lock) is True
-    assert b"mcp==1.29.0" in captured["content"]
+    assert b"mcp==1.30.0" in captured["content"]
 
 
 def test_runtime_lock_probe_nonzero_result_fails_closed_and_cleans_temp(

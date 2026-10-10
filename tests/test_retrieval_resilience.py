@@ -141,7 +141,6 @@ async def test_semantic_only_candidate_is_recalled_with_one_vector_query(
     embedding = StrictEmbedding(pairs=[(bucket_id, 0.91)])
     install_runtime(bucket_mgr, decay_eng, EchoDehydrator(), embedding)
     monkeypatch.setattr("tools.breath.search.random.random", lambda: 1.0)
-
     result = await run_search("entirely different query terms")
 
     assert bucket_id in result

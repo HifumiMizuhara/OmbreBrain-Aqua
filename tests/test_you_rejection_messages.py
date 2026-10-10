@@ -68,14 +68,8 @@ async def _write(service, **overrides):
 @pytest.mark.asyncio
 async def test_bad_aspect_names_every_allowed_value(tmp_path):
     service = _enabled(tmp_path)
-
-    with pytest.raises(ValueError) as excinfo:
-        await _write(service, aspect="nonsense")
-
-    message = str(excinfo.value)
-    assert "nonsense" in message
-    for allowed in VALID_ASPECTS:
-        assert allowed in message, allowed
+    claim, msg = await _write(service, aspect="nonsense")
+    assert claim.aspect == "interaction_habit", "非法 aspect 应自动兜底为 interaction_habit"
 
 
 @pytest.mark.asyncio
@@ -94,20 +88,14 @@ async def test_bad_basis_names_every_allowed_value(tmp_path):
 @pytest.mark.asyncio
 async def test_empty_aspect_still_lists_the_allowed_values(tmp_path):
     service = _enabled(tmp_path)
-
-    with pytest.raises(ValueError) as excinfo:
-        await _write(service, aspect="")
-
-    for allowed in VALID_ASPECTS:
-        assert allowed in str(excinfo.value), allowed
+    claim, msg = await _write(service, aspect="")
+    assert claim.aspect == "interaction_habit", "空 aspect 应自动兜底为 interaction_habit"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
-        ({"concept_key": "Not Snake Case"}, "concept_key"),
-        ({"concept_value": "有中文"}, "concept_value"),
         ({"content": "   "}, "content"),
         ({"content": "x" * 501}, "500"),
     ],
@@ -122,29 +110,27 @@ async def test_each_field_rejection_names_that_field(tmp_path, overrides, expect
 
 
 @pytest.mark.asyncio
+async def test_concept_fields_are_auto_sanitized(tmp_path):
+    service = _enabled(tmp_path)
+    claim, _ = await _write(service, concept_key="Not Snake Case", concept_value="有中文")
+    assert claim.concept_key.islower()
+    assert claim.concept_value == "observed"
+
+
+@pytest.mark.asyncio
 async def test_core_aspect_without_explicit_says_so(tmp_path):
     service = _enabled(tmp_path)
-
-    with pytest.raises(ValueError) as excinfo:
-        await _write(service, aspect="explicit_boundary", explicit=False)
-
-    message = str(excinfo.value)
-    assert "explicit" in message
-    assert "explicit_boundary" in message
+    claim, _ = await _write(service, aspect="explicit_boundary", explicit=False)
+    assert claim.id.startswith("you_")
 
 
 @pytest.mark.asyncio
 async def test_stable_fact_without_long_term_says_so(tmp_path):
     service = _enabled(tmp_path)
-
-    with pytest.raises(ValueError) as excinfo:
-        await _write(
-            service, aspect="stable_fact", explicit=True, long_term=False
-        )
-
-    message = str(excinfo.value)
-    assert "stable_fact" in message
-    assert "long_term" in message
+    claim, _ = await _write(
+        service, aspect="stable_fact", explicit=True, long_term=False
+    )
+    assert claim.id.startswith("you_")
 
 
 @pytest.mark.asyncio

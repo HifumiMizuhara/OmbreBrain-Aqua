@@ -30,6 +30,7 @@ async def test_the_neediest_candidate_comes_first(monkeypatch):
     新写的候选永远排在队尾，于是永远拿不到见证、永远转不了正。
     """
     monkeypatch.setattr("tools.dream.hints.rt.embedding_engine", None)
+    monkeypatch.setattr("tools.dream.hints.I_PROMOTE_THRESHOLD", 3)
     buckets = [
         _candidate("old-but-full", created="2026-01-01", passes=["a", "b"]),
         _candidate("new-and-empty", created="2026-08-01", passes=[]),
@@ -76,6 +77,7 @@ async def test_the_growing_queue_is_capped(monkeypatch):
 async def test_equally_needy_candidates_rotate_by_least_recently_seen(monkeypatch):
     """同样缺见证时，最久没被见证的先来——否则固定几条会把名额包了。"""
     monkeypatch.setattr("tools.dream.hints.rt.embedding_engine", None)
+    monkeypatch.setattr("tools.dream.hints.I_PROMOTE_THRESHOLD", 3)
     buckets = [
         _candidate("seen-recently", created="2026-01-01", passes=["2026-08-20"]),
         _candidate("seen-long-ago", created="2026-01-02", passes=["2026-08-01"]),

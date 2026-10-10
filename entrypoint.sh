@@ -76,9 +76,11 @@ RUN_ROOT="$IMAGE_ROOT"
 ROLLBACK_THRESHOLD=2
 FINGERPRINT_TOOL="$IMAGE_ROOT/src/ombrebrain/maintenance/code_fingerprint.py"
 
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "python")"
+
 _code_fingerprint() {
     [ -f "$FINGERPRINT_TOOL" ] || return 1
-    python "$FINGERPRINT_TOOL" "$1" 2>/dev/null
+    "$PYTHON_BIN" "$FINGERPRINT_TOOL" "$1" 2>/dev/null
 }
 
 _write_marker() {
@@ -328,4 +330,4 @@ if [ "${OMBRE_BOOTSTRAP_ONLY:-0}" = "1" ]; then
 fi
 
 cd "$RUN_ROOT" 2>/dev/null || cd /app
-exec python src/server.py
+exec "$PYTHON_BIN" src/server.py

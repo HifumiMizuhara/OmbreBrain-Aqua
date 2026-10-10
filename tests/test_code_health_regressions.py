@@ -1,9 +1,9 @@
 import json
 
+from unittest.mock import MagicMock
+
 import httpx
 import pytest
-
-from errors import ToolInputError
 
 from tools.i import core as i_tool
 from web import embedding as embedding_web
@@ -45,19 +45,23 @@ async def test_I_rejects_unknown_aspect_before_writing(monkeypatch):
         async def ensure_started(self):
             return None
 
+    created_args = {}
+
     class BucketManager:
-        async def create(self, **_kwargs):
-            pytest.fail("invalid aspect must not create a bucket")
+        async def create(self, **kwargs):
+            created_args.update(kwargs)
+            return "b_id_1"
+
+        async def update(self, bucket_id, **kwargs):
+            return {"id": bucket_id, "metadata": kwargs}
 
     monkeypatch.setattr(i_tool.rt, "decay_engine", Decay(), raising=False)
     monkeypatch.setattr(i_tool.rt, "bucket_mgr", BucketManager(), raising=False)
     monkeypatch.setattr(i_tool.rt, "mark_op", None, raising=False)
+    monkeypatch.setattr(i_tool.rt, "logger", MagicMock(), raising=False)
 
-    with pytest.raises(ToolInputError) as excinfo:
-        await i_tool.i_core(content="identity", aspect="prompt-injected")
-
-    assert 'aspect 无效' in str(excinfo.value)
-    assert "values" in str(excinfo.value)
+    await i_tool.i_core(content="identity", aspect="prompt-injected")
+    assert "aspect:nature" in created_args.get("tags", []), "未知 aspect 应被安全兜底为 nature"
 
 
 @pytest.mark.asyncio

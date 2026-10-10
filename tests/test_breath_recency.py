@@ -59,7 +59,10 @@ def _bucket(bucket_id, *, age_days=0, age_hours=0, score=1.0,
 
 
 def _install(monkeypatch, manager, surfacing=None):
-    monkeypatch.setattr(rt, "config", {"surfacing": surfacing or {}})
+    cfg = {"today": {"enabled": False}, "today_min_slots": 0}
+    if surfacing:
+        cfg.update(surfacing)
+    monkeypatch.setattr(rt, "config", {"surfacing": cfg})
     monkeypatch.setattr(rt, "bucket_mgr", manager)
     monkeypatch.setattr(rt, "decay_engine", WeightedDecay())
     monkeypatch.setattr(rt, "embedding_engine", DisabledEmbedding())

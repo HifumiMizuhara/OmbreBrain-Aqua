@@ -3506,18 +3506,6 @@ class BucketManager:
 
         # --- Layer 2: weighted multi-dim ranking ---
         # --- 第二层：多维加权精排 ---
-        # 语义保底：当短查询余弦相似度普遍偏低时，允许排名前 3 的候选（相似度 >= 0.40）
-        # 获得语义放行资格，避免 0.55 硬阈值一刀切导致相关记忆被静默截断
-        top_vector_ids: set[str] = set()
-        if vector_scores:
-            ranked_vectors = sorted(
-                vector_scores.items(), key=lambda item: item[1], reverse=True
-            )
-            top_vector_ids = {
-                bid for bid, score in ranked_vectors[:3]
-                if score >= min(0.40, self.vector_recall_threshold)
-            }
-
         scored = []
         for bucket in candidates:
             meta = bucket.get("metadata", {})
@@ -3623,10 +3611,7 @@ class BucketManager:
                 text_match = normalized >= self.fuzzy_threshold or literal_hit
                 semantic_match = (
                     semantic_score is not None
-                    and (
-                        semantic_score >= self.vector_recall_threshold
-                        or bucket["id"] in top_vector_ids
-                    )
+                    and semantic_score >= self.vector_recall_threshold
                 )
                 if text_match or semantic_match:
                     # Resolved buckets get ranking penalty (but still reachable by keyword)

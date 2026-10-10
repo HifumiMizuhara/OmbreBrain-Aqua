@@ -96,8 +96,14 @@ async def test_pending_candidate_exposes_its_id(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pending_digest_points_at_delete_id(tmp_path):
+    from dataclasses import replace
+
     service = _enabled(tmp_path)
-    await _write(service)
+    claim, _ = await _write(service)
+    service.store.put_claim(
+        replace(claim, lifecycle="candidate", review_receipts=()),
+        expected_revision=claim.revision,
+    )
 
     output = await service.recall()
 

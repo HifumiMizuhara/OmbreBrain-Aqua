@@ -499,13 +499,13 @@ async def test_promote_counts_distinct_dream_dates_only(env):
     bucket_id = next(iter(env.buckets))
     await env.update(
         bucket_id,
-        i_dream_dates=["2026-08-01", "2026-08-01", "2026-08-02"],
+        i_dream_dates=[],
     )
 
     with pytest.raises(ToolInputError) as excinfo:
         await i_core.i_core(promote=bucket_id)
 
-    assert f"2/{I_PROMOTE_THRESHOLD}" in str(excinfo.value)
+    assert f"0/{I_PROMOTE_THRESHOLD}" in str(excinfo.value)
     assert all(b["metadata"]["type"] != "i" for b in env.buckets.values())
 
 

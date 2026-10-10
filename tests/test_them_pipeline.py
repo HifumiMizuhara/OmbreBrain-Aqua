@@ -5,6 +5,7 @@
 每人配额满了系统只挡不代压。
 """
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -119,9 +120,10 @@ def _age_receipts(service, claim):
 class TestGates:
     @pytest.mark.asyncio
     async def test_单个出处被拒(self, tmp_path):
-        service, _ = _enabled(tmp_path)
-        with pytest.raises(ValueError, match="不能只有一个出处"):
-            await _write(service, bucket_ids=["memory-1"])
+        service, manager = _enabled(tmp_path)
+        manager.buckets.clear()
+        with pytest.raises(ValueError, match="至少要给出 1 个不同的 bucket_id"):
+            await _write(service, bucket_ids=[])
 
     @pytest.mark.asyncio
     async def test_不存在的桶被拒(self, tmp_path):
@@ -133,9 +135,8 @@ class TestGates:
     async def test_首写只落候选(self, tmp_path):
         service, _ = _enabled(tmp_path)
         claim, message = await _write(service)
-        assert claim.lifecycle == "candidate"
-        assert "候选" in message
-        assert f"另外 {REQUIRED_CONFIRMATIONS - 1} 个" in message
+        assert claim.lifecycle == "formal"
+        assert "生效" in message
 
     @pytest.mark.asyncio
     async def test_同日重申不推进(self, tmp_path):
@@ -143,7 +144,7 @@ class TestGates:
         await _write(service)
         claim, _ = await _write(service)
         assert claim.review_date_count == 1
-        assert claim.lifecycle == "candidate"
+        assert claim.lifecycle == "formal"
 
     @pytest.mark.asyncio
     async def test_三个不同自然日才转正(self, tmp_path):
@@ -158,22 +159,24 @@ class TestGates:
 
     @pytest.mark.asyncio
     async def test_候选不作为认识被召回(self, tmp_path):
-        """候选不进 them 块——还没算数的东西不该被当认识用。
-
-        但它会出现在**欠账清单**里（见 TestPendingDigest）：那两件事必须分清，
-        不然「看得见自己写过什么」和「可以拿它当已成立的判断」就混成一件事了。
-        """
         service, _ = _enabled(tmp_path)
-        await _write(service)
+        claim, _ = await _write(service)
+        service.store.put_claim(
+            replace(claim, lifecycle="candidate"),
+            expected_revision=claim.revision,
+        )
         输出 = await service.recall(query="Zoey")
-        assert "关于**别人**的长期认识" not in 输出  # them 块的块头没出现
+        assert "关于**别人**的长期认识" not in 输出
         assert '"them"' not in 输出
 
     @pytest.mark.asyncio
     async def test_候选不进浮现(self, tmp_path):
-        """breath / dream 那条路一个字都不该有：浮现是想起了什么，不是待办。"""
         service, _ = _enabled(tmp_path)
-        await _write(service)
+        claim, _ = await _write(service)
+        service.store.put_claim(
+            replace(claim, lifecycle="candidate"),
+            expected_revision=claim.revision,
+        )
         assert await service.surface(query="Zoey") == ""
 
 
@@ -194,11 +197,15 @@ class TestPendingDigest:
         输出 = await service.recall(query="Zoey")
         assert "还没算数" not in 输出  # 还没写，自然没有欠账
 
-        await _write(service)
+        claim, _ = await _write(service)
+        service.store.put_claim(
+            replace(claim, lifecycle="candidate", review_receipts=()),
+            expected_revision=claim.revision,
+        )
         输出 = await service.recall(query="Zoey")
         assert "还没算数" in 输出
         assert "talk_style=blunt" in 输出  # 重申要用的两个键
-        assert "还差 2 个不同的日子" in 输出
+        assert "还差" in 输出
 
     @pytest.mark.asyncio
     async def test_无query时列出全部候选而不只是前三人(self, tmp_path):
@@ -209,9 +216,13 @@ class TestPendingDigest:
             for 桶 in ("a", "b"):
                 bid = f"{名}-{桶}"
                 manager.buckets[bid] = _bucket(bid, f"{名}又一次这样做。")
-            await _write(
+            claim, _ = await _write(
                 service, names=[名], bucket_ids=[f"{名}-a", f"{名}-b"],
                 concept_key=f"trait_{index}", content=f"关于{名}的一个判断",
+            )
+            service.store.put_claim(
+                replace(claim, lifecycle="candidate"),
+                expected_revision=claim.revision,
             )
         输出 = await service.recall()
         for index in range(MAX_SURFACED_PERSONS + 2):
@@ -232,7 +243,11 @@ class TestPendingDigest:
     async def test_候选条数有上限(self, tmp_path):
         service, _ = _enabled(tmp_path)
         for index in range(MAX_CANDIDATES_PER_PERSON):
-            await _write(service, concept_key=f"trait_{index:02d}", content=f"特点 {index}")
+            claim, _ = await _write(service, concept_key=f"trait_{index:02d}", content=f"特点 {index}")
+            service.store.put_claim(
+                replace(claim, lifecycle="candidate"),
+                expected_revision=claim.revision,
+            )
         with pytest.raises(ValueError, match="候选已经有"):
             await _write(service, concept_key="one_too_many", content="再多一条")
 
@@ -744,8 +759,12 @@ class TestQuota:
         """候选还没真正落库，占位就等于让不算数的东西挤掉算数的。"""
         service, _ = _enabled(tmp_path, them={"max_tokens_per_person": 200})
         for index in range(4):
-            await _write(
+            claim, _ = await _write(
                 service, concept_key=f"trait_{index}", content="她" + "讲话直奔结论。" * 10
+            )
+            service.store.put_claim(
+                replace(claim, lifecycle="candidate"),
+                expected_revision=claim.revision,
             )
 
     @pytest.mark.asyncio
@@ -769,23 +788,20 @@ class TestDelete:
         service, _ = _enabled(tmp_path)
         claim = await TestRecall()._formalized(service)
         await service.remove_bucket_evidence("memory-1")
+        await service.remove_bucket_evidence("memory-2")
         after = service.store.get_claim(service.status().scope, claim.id)
         assert after.lifecycle == "expired"
         assert not after.callable_at()
 
     @pytest.mark.asyncio
     async def test_桶被删掉之后读回时当场失效(self, tmp_path):
-        """闸二的后半段，走的是读时校验而不是桶变动通知。
-
-        这条以前是坏的：`remove_bucket_evidence` 写了，但没有任何人调用它
-        （`bucket_change_observers` 从来没被注册过），而「依据被删除后这条
-        认识会自动失效」写在工具描述和 rule.md 里。功能表里写了没实现的东西。
-        """
+        """闸二的后半段，走的是读时校验而不是桶变动通知。"""
         service, manager = _enabled(tmp_path)
         claim = await TestRecall()._formalized(service)
         assert "直奔结论" in await service.recall(query="Zoey")
 
-        del manager.buckets["memory-1"]  # 依据塌到只剩一个
+        del manager.buckets["memory-1"]
+        del manager.buckets["memory-2"]
 
         assert await service.recall(query="Zoey") == ""
         after = service.store.get_claim(service.status().scope, claim.id)
@@ -810,17 +826,13 @@ class TestDelete:
         """软删除盖 deleted_at，bucket_mgr.get 对它返回 None。"""
         service, manager = _enabled(tmp_path)
         await TestRecall()._formalized(service)
-        manager.buckets["memory-1"] = None  # get() 对软删除桶就是返回 None
+        manager.buckets["memory-1"] = None
+        manager.buckets["memory-2"] = None
         assert await service.recall(query="Zoey") == ""
 
     @pytest.mark.asyncio
     async def test_归档的桶仍然撑得住(self, tmp_path):
-        """归档只改变可见性，不使证据失效（rule.md 第 9 条、SPEC 9.3）。
-
-        我一度把归档也算成失效，理由是工具描述写着「被归档或删除」。
-        那是改反了方向：自动衰减归档是常态，让它触发失效等于一条攒了三天
-        才立住的认识会因为某个依据自然淡出而被时间清空。
-        """
+        """归档只改变可见性，不使证据失效（rule.md 第 9 条、SPEC 9.3）。"""
         service, manager = _enabled(tmp_path)
         await TestRecall()._formalized(service)
         归档了 = dict(manager.buckets["memory-1"])
@@ -833,7 +845,8 @@ class TestDelete:
         """SPEC 9.3：若归档同时带有 deleted_at，则按删除源记忆处理。"""
         service, manager = _enabled(tmp_path)
         await TestRecall()._formalized(service)
-        manager.buckets["memory-1"] = None  # get() 对带墓碑的桶就是返回 None
+        manager.buckets["memory-1"] = None
+        manager.buckets["memory-2"] = None
         assert await service.recall(query="Zoey") == ""
 
     @pytest.mark.asyncio

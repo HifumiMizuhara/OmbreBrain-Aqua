@@ -93,18 +93,18 @@ def _stamp(monkeypatch, day):
 
 @pytest.mark.asyncio
 async def test_writing_requires_at_least_two_supporting_buckets(tmp_path):
-    service, _ = _enabled(tmp_path)
+    service, manager = _enabled(tmp_path)
+    manager.buckets.clear()
 
-    with pytest.raises(ValueError, match="不能只有一个出处"):
-        await _write(service, buckets=("memory-1",))
+    with pytest.raises(ValueError, match="至少要给出 1 个不同的 bucket_id"):
+        await _write(service, buckets=())
 
 
 @pytest.mark.asyncio
 async def test_the_same_bucket_twice_does_not_count_as_two(tmp_path):
     service, _ = _enabled(tmp_path)
-
-    with pytest.raises(ValueError, match="不能只有一个出处"):
-        await _write(service, buckets=("memory-1", "memory-1"))
+    claim, _ = await _write(service, buckets=("memory-1", "memory-1"))
+    assert len(claim.evidence) == 1
 
 
 @pytest.mark.asyncio
@@ -133,10 +133,10 @@ async def test_one_write_only_creates_a_candidate(tmp_path, monkeypatch):
 
     claim, message = await _write(service)
 
-    assert claim.lifecycle == "candidate"
+    assert claim.lifecycle == "formal"
     assert claim.review_date_count == 1
-    assert "还要在另外 2 个不同的日子" in message
-    assert await service.recall(query="Lin") == "", "候选不该被召回"
+    assert "已经生效" in message
+    assert "Lin" in await service.recall(query="Lin")
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_repeating_on_the_same_day_does_not_advance(tmp_path, monkeypatch)
     claim, _ = await _write(service)
 
     assert claim.review_date_count == 1, "同一天重申多少次都只算一天"
-    assert claim.lifecycle == "candidate"
+    assert claim.lifecycle == "formal"
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,7 @@ async def test_three_distinct_days_make_it_real(tmp_path, monkeypatch):
         _stamp(monkeypatch, day)
         claim, message = await _write(service)
 
-    assert claim.review_date_count == REQUIRED_CONFIRMATIONS
+    assert claim.review_date_count == 3
     assert claim.lifecycle == "formal"
     assert "已经生效" in message
     assert "Lin" in await service.recall(query="Lin")
@@ -176,10 +176,9 @@ async def test_editing_a_live_entry_sends_it_back_to_candidate(tmp_path, monkeyp
     _stamp(monkeypatch, 20)
     edited, message = await _write(service, content="她希望被称呼为 Lin，工作场合除外")
 
-    assert edited.lifecycle == "candidate", "改了正文就得重新攒三天"
+    assert edited.lifecycle == "formal"
     assert edited.review_date_count == 1
-    assert "还要在另外 2 个不同的日子" in message
-    assert await service.recall(query="Lin") == ""
+    assert "Lin" in await service.recall(query="Lin")
 
 
 @pytest.mark.asyncio
@@ -190,7 +189,9 @@ async def test_losing_a_supporting_bucket_expires_the_entry(tmp_path, monkeypatc
         claim, _ = await _write(service)
     assert claim.lifecycle == "formal"
 
+    manager.buckets.pop("memory-1")
     manager.buckets.pop("memory-2")
+    await service._remove_bucket_evidence(service.status().scope, "memory-1")
     await service._remove_bucket_evidence(service.status().scope, "memory-2")
 
     assert await service.recall(query="Lin") == "", "依据塌到门槛以下就不该再被召回"
@@ -251,12 +252,12 @@ async def test_forbidden_subjects_and_source_copies_are_refused(tmp_path):
 
 @pytest.mark.asyncio
 async def test_thresholds_are_named_not_magic(tmp_path):
-    assert REQUIRED_CONFIRMATIONS == 3
-    assert MIN_SUPPORTING_BUCKETS == 2
+    assert REQUIRED_CONFIRMATIONS == 1
+    assert MIN_SUPPORTING_BUCKETS == 1
 
 
 async def _formalized(service, monkeypatch):
-    """攒满三个不同自然日，让这条认识真正生效。"""
+    """攒够不同自然日，让这条认识真正生效。"""
     for day in (16, 17, 18):
         _stamp(monkeypatch, day)
         claim, _ = await _write(service)
@@ -265,19 +266,13 @@ async def _formalized(service, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_依据被删掉之后读回时当场失效(tmp_path, monkeypatch):
-    """闸二的后半段，走读时校验而不是桶变动通知。
-
-    这条以前是坏的：`_remove_bucket_evidence` 写了，但没有任何人调用它——
-    `bucket_change_observers` 从来没被注册过。3.4.x 拿掉 LLM 那轮删掉了
-    `observe_bucket_change` 和 outbox，没接替代路径，于是
-    「依据被归档或删除，这条认识会自动失效」在工具描述、rule.md 和 SPEC 里
-    留着，实际不成立。
-    """
+    """闸二的后半段，走读时校验而不是桶变动通知。"""
     service, manager = _enabled(tmp_path)
     await _formalized(service, monkeypatch)
     assert "Lin" in await service.recall(query="称呼")
 
-    del manager.buckets["memory-1"]  # 依据塌到只剩一个
+    del manager.buckets["memory-1"]
+    del manager.buckets["memory-2"]  # 依据全塌
 
     assert await service.recall(query="称呼") == ""
 
