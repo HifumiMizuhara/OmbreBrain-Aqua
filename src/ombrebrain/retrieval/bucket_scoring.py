@@ -53,29 +53,50 @@ TOUCH_NORMALIZE_CAP = 10.0   # activation_count / 该值，裁到 1.0
 # name(×3) + domain(×2.5) + tags(×2) + body(×1)
 # 文本相关性子分：桶名(×3) + 主题域(×2.5) + 标签(×2) + 正文(×1)
 # ---------------------------------------------------------
+def _token_aware_partial_ratio(query: str, target: str, tokens: list[str]) -> float:
+    """计算单个文本字段的模糊匹配分。
+
+    当 query 为多词（如“验血 医院”）时，兼顾整句滑动匹配与各子词的最高/平均命中，
+    避免未命中词和空格直接惩罚局部字符重合度。
+    """
+    if not target:
+        return 0.0
+    full_ratio = float(fuzz.partial_ratio(query, target))
+    if len(tokens) <= 1:
+        return full_ratio
+    token_scores = [float(fuzz.partial_ratio(t, target)) for t in tokens]
+    if not token_scores:
+        return full_ratio
+    token_agg = (sum(token_scores) / len(token_scores)) * 0.5 + max(token_scores) * 0.5
+    return max(full_ratio, token_agg)
+
+
 def calc_topic_score(query: str, bucket: dict, content_weight: float = 1.0) -> float:
     """
     Calculate text dimension relevance score (0~1).
     计算文本维度的相关性得分。
     """
     meta = bucket.get("metadata", {})
+    tokens = [t.strip() for t in query.split() if len(t.strip()) >= 2]
 
-    name_score = fuzz.partial_ratio(query, meta.get("name", "")) * TOPIC_NAME_W
+    name_score = _token_aware_partial_ratio(query, meta.get("name", ""), tokens) * TOPIC_NAME_W
     domain_score = (
         max(
-            (fuzz.partial_ratio(query, d) for d in meta.get("domain", [])),
-            default=0,
+            (_token_aware_partial_ratio(query, d, tokens) for d in meta.get("domain", [])),
+            default=0.0,
         )
         * TOPIC_DOMAIN_W
     )
     tag_score = (
         max(
-            (fuzz.partial_ratio(query, tag) for tag in meta.get("tags", [])),
-            default=0,
+            (_token_aware_partial_ratio(query, tag, tokens) for tag in meta.get("tags", [])),
+            default=0.0,
         )
         * TOPIC_TAG_W
     )
-    content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:TOPIC_BODY_SLICE]) * content_weight
+    content_score = _token_aware_partial_ratio(
+        query, bucket.get("content", "")[:TOPIC_BODY_SLICE], tokens
+    ) * content_weight
 
     return (name_score + domain_score + tag_score + content_score) / (
         100 * (TOPIC_NAME_W + TOPIC_DOMAIN_W + TOPIC_TAG_W + content_weight)

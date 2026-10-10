@@ -3506,13 +3506,27 @@ class BucketManager:
 
         # --- Layer 2: weighted multi-dim ranking ---
         # --- 第二层：多维加权精排 ---
+        # 语义保底：当短查询余弦相似度普遍偏低时，允许排名前 3 的候选（相似度 >= 0.40）
+        # 获得语义放行资格，避免 0.55 硬阈值一刀切导致相关记忆被静默截断
+        top_vector_ids: set[str] = set()
+        if vector_scores:
+            ranked_vectors = sorted(
+                vector_scores.items(), key=lambda item: item[1], reverse=True
+            )
+            top_vector_ids = {
+                bid for bid, score in ranked_vectors[:3]
+                if score >= min(0.40, self.vector_recall_threshold)
+            }
+
         scored = []
         for bucket in candidates:
             meta = bucket.get("metadata", {})
 
             try:
                 # 字面命中：查询串原样出现在 name/tags/domain/正文 → 召回保障 + 排序加分
+                # 支持多词拆分：多词查询（如“验血 医院”）即使不连贯，命中有效分词亦可放行
                 literal_hit = False
+                literal_match_ratio = 1.0
                 if q_norm:
                     hay = " ".join([
                         str(meta.get("name", "")),
@@ -3520,7 +3534,16 @@ class BucketManager:
                         " ".join(str(d) for d in (meta.get("domain") or [])),
                         bucket.get("content", "") or "",
                     ]).lower()
-                    literal_hit = q_norm in hay
+                    if q_norm in hay:
+                        literal_hit = True
+                        literal_match_ratio = 1.0
+                    else:
+                        q_tokens = [t.strip() for t in q_norm.split() if len(t.strip()) >= 2]
+                        if q_tokens:
+                            matched_count = sum(1 for t in q_tokens if t in hay)
+                            if matched_count > 0:
+                                literal_hit = True
+                                literal_match_ratio = matched_count / len(q_tokens)
 
                 # Dim 1: topic relevance (fuzzy text, 0~1)
                 topic_score = self._calc_topic_score(query, bucket)
@@ -3568,7 +3591,8 @@ class BucketManager:
                 # 因加权分被各维度稀释到 fuzzy_threshold 以下而整条搜不到。
                 # 用户显式搜的词必须召回，故 literal_hit 直接放行（OR），并给排序加分。
                 if literal_hit:
-                    normalized = min(100.0, normalized + _LITERAL_MATCH_BONUS)
+                    bonus = _LITERAL_MATCH_BONUS * max(0.4, literal_match_ratio)
+                    normalized = min(100.0, normalized + bonus)
 
                 # Threshold check uses raw (pre-penalty) score so resolved buckets
                 # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
@@ -3599,7 +3623,10 @@ class BucketManager:
                 text_match = normalized >= self.fuzzy_threshold or literal_hit
                 semantic_match = (
                     semantic_score is not None
-                    and semantic_score >= self.vector_recall_threshold
+                    and (
+                        semantic_score >= self.vector_recall_threshold
+                        or bucket["id"] in top_vector_ids
+                    )
                 )
                 if text_match or semantic_match:
                     # Resolved buckets get ranking penalty (but still reachable by keyword)

@@ -464,10 +464,14 @@ async def surface_search(
             ]
             remaining_slots = max(0, max_results - len(matches))
             if low_weight and remaining_slots:
-                drifted = random.sample(
-                    low_weight,
-                    min(random.randint(3, 5), len(low_weight), remaining_slots),
+                # 0 命中时漂 3~5 条（rule.md §11：想不出内容时的杂念）；
+                # 有命中但不足 3 条时，联想数量不超过命中数量（最多 1 条），避免喧宾夺主倒挂
+                drift_count = (
+                    min(random.randint(3, 5), len(low_weight), remaining_slots)
+                    if len(matches) == 0
+                    else min(1, len(matches), len(low_weight), remaining_slots)
                 )
+                drifted = random.sample(low_weight, drift_count)
                 drift_results = []
                 for b in drifted:
                     rendered, entry_tokens = render_stored_bucket(
