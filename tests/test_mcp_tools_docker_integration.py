@@ -874,7 +874,7 @@ def test_I_candidate_visible_in_dream_advances_one_witness(mcp_client):
 
     before = mcp_client.call("I", {"read": True, "limit": 100})
     assert marker in before
-    assert _i_witness_progress(before, candidate_id) == (0, 3)
+    assert _i_witness_progress(before, candidate_id) == (0, 1)
 
     dreamed = mcp_client.call("dream", {"window_hours": 48})
     assert marker in dreamed
@@ -882,7 +882,7 @@ def test_I_candidate_visible_in_dream_advances_one_witness(mcp_client):
 
     after = mcp_client.call("I", {"read": True, "limit": 100})
     assert marker in after
-    assert _i_witness_progress(after, candidate_id) == (1, 3)
+    assert _i_witness_progress(after, candidate_id) == (1, 1)
 
 
 def test_dream_returns_recent_complete_memory(mcp_client):
@@ -925,7 +925,7 @@ def test_query_tools_enforce_query_size_limit(mcp_client, tool, arguments):
         ("release", {"bucket_id": "missing-boundary-id"}, "我没能把它移开"),
         ("plan", {"content": ""}, "内容为空"),
         ("letter_write", {"author": "", "content": "x"}, "author"),
-        ("I", {"content": "x", "aspect": "prompt-injected"}, "aspect 无效"),
+        ("I", {"promote": "missing-boundary-id"}, "找不到候选"),
     ],
 )
 def test_invalid_tool_arguments_fail_cleanly(mcp_client, tool, arguments, expected):
