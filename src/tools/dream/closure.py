@@ -45,9 +45,9 @@ def find_possibly_closed(all_buckets: list[dict], now: datetime | None = None) -
         old_meta = old["metadata"]
         old_tags = _tags(old_meta)
         linked = {
-            str(l.get("target_bucket_id"))
-            for l in (old_meta.get("relation_links") or [])
-            if isinstance(l, dict) and l.get("status", "active") == "active"
+            str(link.get("target_bucket_id"))
+            for link in (old_meta.get("relation_links") or [])
+            if isinstance(link, dict) and link.get("status", "active") == "active"
         }
         for t_new, new in stamped[i + 1:]:
             if t_new - t_old < timedelta(days=1):

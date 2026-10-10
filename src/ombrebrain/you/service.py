@@ -267,7 +267,7 @@ class YouService:
             if clean_key and len(clean_key) >= 3 and clean_key[0].isalpha():
                 concept_key = clean_key[:120]
             else:
-                hash_part = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
+                hash_part = hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
                 concept_key = f"{aspect[:12]}_{hash_part}"
 
         if not _CONCEPT_VALUE_RE.fullmatch(concept_value):
