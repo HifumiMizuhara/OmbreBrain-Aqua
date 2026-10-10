@@ -7,8 +7,8 @@
     },
     {
       "path": "frontend/dashboard.html",
-      "sha256": "9d0f98a8669723e584f83be3ee23370b3740bbccfa009e5aa1ac9c193a68d549",
-      "size": 575407
+      "sha256": "2c877bbf7db357e5b64eb77189b8888b8587bedb9c887ee5080e5c8660d69ad3",
+      "size": 597706
     },
     {
       "path": "frontend/favicon.svg",
@@ -32,7 +32,7 @@
     },
     {
       "path": "src/VERSION",
-      "sha256": "3bb442ce069faa29121f36902061d02bfc376a236d1602f12f525a6589e26042",
+      "sha256": "b31cb47bbe9760177d1df5049f80dc44eda6e37b8f0bd4f1d0757e226e966cde",
       "size": 5
     },
     {
@@ -637,8 +637,8 @@
     },
     {
       "path": "src/tools/breath/episodic.py",
-      "sha256": "cee0b248e1606f533d197ef491fabaff4b5048113593fe34250a8115bb0799ae",
-      "size": 15708
+      "sha256": "8cd8b07b00680d0f8716cae07ca27d7bab46056b9e37c7c15933e30c5d734ddc",
+      "size": 21272
     },
     {
       "path": "src/tools/breath/feel.py",
@@ -657,8 +657,8 @@
     },
     {
       "path": "src/tools/breath/surface.py",
-      "sha256": "1f9ed41a8d27ac3b6555ef371f4fa1c4354397fcae77eacda6daf63cf80c73f0",
-      "size": 31860
+      "sha256": "f43fa6b501502d86415b5fc31d8e843d31a93c8a0a238ef05a7aa0da21f21bd4",
+      "size": 36761
     },
     {
       "path": "src/tools/breath/today.py",
@@ -827,8 +827,8 @@
     },
     {
       "path": "src/web/config_api.py",
-      "sha256": "5e99ac9704c1feb3696e761360b731203f14dcb872bc4d78bf87713a3b28cd63",
-      "size": 73932
+      "sha256": "3833d9a1c5bc2d24997e52b51d27b4dcc49a5ca737f5ed589c26e11445ade619",
+      "size": 74765
     },
     {
       "path": "src/web/dashboard.py",
@@ -892,8 +892,8 @@
     },
     {
       "path": "src/web/search.py",
-      "sha256": "3bea5dfa978447909c1db2b4ae748e9e89da423573e50fa524715dc36d35e0a7",
-      "size": 21115
+      "sha256": "25d1512042af0c966c0706448dbbe72c829709ab7507224e17e7761a5c2fe88e",
+      "size": 26517
     },
     {
       "path": "src/web/system.py",
@@ -922,5 +922,5 @@
     }
   ],
   "rollout_strategy": "single-node",
-  "version": "3.9.2"
+  "version": "3.9.4"
 }

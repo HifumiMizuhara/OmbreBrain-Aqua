@@ -2381,7 +2381,23 @@
     <div class="legend-item"><span class="legend-dot" style="background:#B85C3C"></span> [[双链]]</div>
     <div class="legend-item"><span class="legend-dot" style="background:#4A7C59"></span> #tag</div>
     <div class="legend-item"><span class="legend-dot" style="background:#9A7B4F"></span> 既是双链也是 tag <span class="en">Both</span></div>
-    <div class="legend-item" style="margin-left:18px;"><span style="display:inline-block;width:18px;height:2px;background:#8A8070;margin-right:6px;vertical-align:middle;"></span> 共现 <span class="en">Co-occurrence</span></div>
+    <div class="legend-item" style="margin-left:14px;"><span style="display:inline-block;width:18px;height:2px;background:#8A8070;margin-right:6px;vertical-align:middle;"></span> 共现 <span class="en">Co-occurrence</span></div>
+
+    <div style="display:inline-flex;align-items:center;gap:6px;margin-left:14px;">
+      <i data-lucide="search" style="width:13px;height:13px;color:var(--text-dim);"></i>
+      <input type="text" id="network-search" placeholder="搜索概念 / 双链 / tag…" oninput="onNetworkSearch(this.value)" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:150px;" />
+    </div>
+
+    <label style="font-size:11px;color:var(--text-dim);display:inline-flex;align-items:center;gap:4px;margin-left:10px;">
+      范围 Scope
+      <select id="network-density" onchange="onNetworkDensityChange()" style="font-size:11px;padding:2px 6px;background:var(--surface);border:1px solid var(--border);color:var(--text);">
+        <option value="30" selected>核心 Top 30</option>
+        <option value="60">常用 Top 60</option>
+        <option value="120">骨干 Top 120</option>
+        <option value="250">全景 Top 250</option>
+      </select>
+    </label>
+
     <label style="margin-left:auto;font-size:11px;color:var(--text-dim);display:inline-flex;align-items:center;gap:6px;">
       模式 Mode
       <select id="network-mode" onchange="loadNetwork()" style="font-size:11px;padding:2px 6px;background:var(--surface);border:1px solid var(--border);color:var(--text);">
@@ -6127,13 +6143,17 @@ var _netListenersAttached = false;
 var _netRotAngle = 0;
 var networkState = {
   focusNode: null,      // 当前聚焦的节点 id，null = 全局视图
-  depth: 2,             // 展开深度
+  depth: 2,             // 展开深度 (1~3)
+  density: 30,          // 默认展示 Top 30 核心节点
   visibleNodes: null,   // 当前渲染的节点 id Set
+  visEdges: [],         // 预先缓存的当前可见边列表（严禁在 RAF 循环中每帧全量 filter）
   positions: {},        // 节点坐标缓存
   isDragging: false,
   dragStart: null,
   panOffset: { x: 0, y: 0 },
   scale: 1,
+  needsLayout: true,
+  hoverNode: null,
 };
 
 // –– 替换 loadNetwork ––
@@ -6156,7 +6176,7 @@ async function loadNetwork() {
   ctx.font = "14px 'Share Tech Mono', monospace";
   ctx.textAlign = 'center';
   ctx.fillText('LOADING MEMORY NET…', W / 2, H / 2);
-  setNetTerminal('SCANNING · 正在读取记忆网络');
+  setNetTerminal('SCANNING · 正在读取记忆网络…');
 
   try {
     var modeSel = document.getElementById('network-mode');
@@ -6169,8 +6189,11 @@ async function loadNetwork() {
     } else {
       initConceptNetwork(canvas, ctx, W, H, networkData);
     }
-    var _n = (networkData.nodes || []).length, _e = (networkData.edges || networkData.links || []).length;
-    setNetTerminal('ONLINE · ' + _n + ' nodes / ' + _e + ' links · mode=' + mode);
+    var totalN = networkData.total_nodes != null ? networkData.total_nodes : (networkData.nodes || []).length;
+    var totalE = networkData.total_edges != null ? networkData.total_edges : (networkData.edges || networkData.links || []).length;
+    var visN = networkState.visibleNodes ? networkState.visibleNodes.size : (networkData.nodes || []).length;
+    var visE = networkState.visEdges ? networkState.visEdges.length : (networkData.edges || []).length;
+    setNetTerminal('ONLINE · 展示 ' + visN + ' 节点 / ' + visE + ' 连线 (全库总计 ' + totalN + ' nodes / ' + totalE + ' links) · mode=' + mode);
   } catch (e) {
     ctx.fillStyle = '#5B5D4F';
     ctx.textAlign = 'center';
@@ -6185,6 +6208,61 @@ function setNetTerminal(msg) {
   if (el) el.textContent = msg;
 }
 
+// –– 缓存当前可见的边（仅在节点集合变动时执行一次，切勿放入 60fps 动画帧中） ––
+function updateVisibleEdges(data) {
+  var visible = networkState.visibleNodes;
+  if (!visible || !data || !data.edges) {
+    networkState.visEdges = [];
+    return;
+  }
+  networkState.visEdges = data.edges.filter(function (e) {
+    return visible.has(e.source) && visible.has(e.target);
+  });
+}
+
+// –– 切换展示密度范围 ––
+function onNetworkDensityChange() {
+  if (!networkData) return;
+  var d = networkData;
+  var densityEl = document.getElementById('network-density');
+  var topN = densityEl ? parseInt(densityEl.value) || 30 : 30;
+  networkState.density = topN;
+  var sortedAll = (d.nodes || []).slice().sort(function (a, b) {
+    return (b.freq || 1) - (a.freq || 1);
+  });
+  networkState.focusNode    = null;
+  networkState.visibleNodes = new Set(sortedAll.slice(0, topN).map(function (n) { return n.id; }));
+  networkState.positions    = {};
+  updateVisibleEdges(d);
+  networkState.needsLayout  = true;
+  var totalN = d.total_nodes != null ? d.total_nodes : (d.nodes || []).length;
+  var totalE = d.total_edges != null ? d.total_edges : (d.edges || []).length;
+  setNetTerminal('ONLINE · 展示 Top ' + networkState.visibleNodes.size + ' 核心概念 (全库 ' + totalN + ' nodes / ' + totalE + ' links)');
+}
+
+// –– 概念快速搜索与跳转定位 ––
+function onNetworkSearch(query) {
+  if (!networkData) return;
+  query = (query || '').trim().toLowerCase();
+  var d = networkData;
+  if (!query) {
+    onNetworkDensityChange();
+    return;
+  }
+  var match = (d.nodes || []).find(function (n) {
+    return (n.id && n.id.toLowerCase().includes(query)) ||
+           (n.label && n.label.toLowerCase().includes(query));
+  });
+  if (match) {
+    networkState.focusNode    = match.id;
+    networkState.visibleNodes = getNeighbors(match.id, networkState.depth, d);
+    networkState.positions    = {};
+    updateVisibleEdges(d);
+    networkState.needsLayout  = true;
+    setNetTerminal('FOCUS · 找到概念 [[' + (match.label || match.id) + ']] · 展开 ' + networkState.visibleNodes.size + ' 个强关联节点');
+  }
+}
+
 // –– 初始化（绑定交互，启动星空动画） ––
 function initConceptNetwork(canvas, ctx, W, H, data) {
   injectNetworkControls();
@@ -6192,7 +6270,9 @@ function initConceptNetwork(canvas, ctx, W, H, data) {
 
   var nodes = data.nodes || [];
   var sorted = nodes.slice().sort(function (a, b) { return (b.freq || 1) - (a.freq || 1); });
-  var defaultVisible = new Set(sorted.slice(0, 30).map(function (n) { return n.id; }));
+  var densityEl = document.getElementById('network-density');
+  var topN = densityEl ? parseInt(densityEl.value) || 30 : 30;
+  var defaultVisible = new Set(sorted.slice(0, topN).map(function (n) { return n.id; }));
 
   networkState.focusNode    = null;
   networkState.visibleNodes = defaultVisible;
@@ -6201,6 +6281,8 @@ function initConceptNetwork(canvas, ctx, W, H, data) {
   networkState.scale        = 1;
   networkState.needsLayout  = true;
   _netRotAngle              = 0;
+
+  updateVisibleEdges(data);
 
   // 切换成工程网格星图外观
   canvas.classList.add('star-active');
@@ -6216,19 +6298,23 @@ function initConceptNetwork(canvas, ctx, W, H, data) {
     canvas.addEventListener('click', function (e) {
       if (!networkData) return;
       var d = networkData;
-      var sortedAll = (d.nodes || []).slice().sort(function (a, b) { return (b.freq || 1) - (a.freq || 1); });
       var rect = canvas.getBoundingClientRect();
       var hit  = hitTest(e.clientX - rect.left, e.clientY - rect.top, W, H);
       if (hit) {
         if (networkState.focusNode === hit) {
-          networkState.focusNode    = null;
-          networkState.visibleNodes = new Set(sortedAll.slice(0, 30).map(function (n) { return n.id; }));
+          // 再次点击取消聚焦，返回全局视图
+          networkState.focusNode = null;
+          onNetworkDensityChange();
         } else {
           networkState.focusNode    = hit;
           networkState.visibleNodes = getNeighbors(hit, networkState.depth, d);
+          networkState.positions    = {};
+          updateVisibleEdges(d);
+          networkState.needsLayout  = true;
+          var nodeObj = (d.nodes || []).find(function(x) { return x.id === hit; });
+          var name = nodeObj ? (nodeObj.label || nodeObj.id) : hit;
+          setNetTerminal('FOCUS · 选中 [[' + name + ']] · 关联展开 ' + networkState.visibleNodes.size + ' 个强关联节点 · 再次点击返回全局');
         }
-        networkState.positions   = {};
-        networkState.needsLayout = true;
       }
     });
 
@@ -6283,29 +6369,54 @@ function ensureNetworkBubble() {
   return b;
 }
 
-// –– 构建邻接表 ––
+// –– 构建邻接表与强权重索引 ––
 function buildAdjacency(data) {
   data._adj = {};
-  (data.nodes || []).forEach(function (n) { data._adj[n.id] = []; });
+  data._adjWeights = {};
+  (data.nodes || []).forEach(function (n) {
+    data._adj[n.id] = [];
+    data._adjWeights[n.id] = [];
+  });
   (data.edges || []).forEach(function (e) {
-    if (data._adj[e.source]) data._adj[e.source].push(e.target);
-    if (data._adj[e.target]) data._adj[e.target].push(e.source);
+    if (data._adj[e.source]) {
+      data._adj[e.source].push(e.target);
+      data._adjWeights[e.source].push({ target: e.target, weight: e.weight || 1 });
+    }
+    if (data._adj[e.target]) {
+      data._adj[e.target].push(e.source);
+      data._adjWeights[e.target].push({ target: e.source, weight: e.weight || 1 });
+    }
+  });
+  // 邻居按关联权重降序排序，保证单点展开时优先取最强连接
+  Object.keys(data._adjWeights).forEach(function (k) {
+    data._adjWeights[k].sort(function (a, b) { return b.weight - a.weight; });
   });
 }
 
-// –– BFS 取 depth 层邻居 ––
-function getNeighbors(startId, depth, data) {
+// –– 有界 BFS 取 depth 层强关联邻居（防止全图发散导致卡死） ––
+function getNeighbors(startId, depth, data, maxTotalNodes) {
+  maxTotalNodes = maxTotalNodes || 50;
   var visited = new Set([startId]);
   var frontier = [startId];
   for (var d = 0; d < depth; d++) {
     var next = [];
     frontier.forEach(function (id) {
-      (data._adj[id] || []).forEach(function (nb) {
-        if (!visited.has(nb)) { visited.add(nb); next.push(nb); }
-      });
+      if (visited.size >= maxTotalNodes) return;
+      var adjList = (data._adjWeights && data._adjWeights[id]) ? data._adjWeights[id] : [];
+      var perNodeLimit = (d === 0) ? 18 : 8;
+      var added = 0;
+      for (var i = 0; i < adjList.length; i++) {
+        var nb = adjList[i].target;
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          next.push(nb);
+          added++;
+          if (added >= perNodeLimit || visited.size >= maxTotalNodes) break;
+        }
+      }
     });
     frontier = next;
-    if (!frontier.length) break;
+    if (!frontier.length || visited.size >= maxTotalNodes) break;
   }
   return visited;
 }
@@ -6313,7 +6424,6 @@ function getNeighbors(startId, depth, data) {
 // –– 碰撞检测（返回被点击的节点 id 或 null） ––
 function hitTest(mx, my, W, H) {
   if (!networkData) return null;
-  // 反向旋转鼠标坐标，对应到未旋转的节点坐标系
   var cx  = W / 2, cy = H / 2;
   var cos = Math.cos(-_netRotAngle), sin = Math.sin(-_netRotAngle);
   var rx  = cx + (mx - cx) * cos - (my - cy) * sin;
@@ -6331,39 +6441,51 @@ function hitTest(mx, my, W, H) {
   return hit;
 }
 
-// –– 布局计算（力导向，不绘制） ––
+// –– 布局计算（有界快速力导向，完成即稳定） ––
 function _computeConceptLayout(W, H, data) {
-  var visible  = networkState.visibleNodes;
-  var focusId  = networkState.focusNode;
-  var allNodes = data.nodes || [];
-  var allEdges = data.edges || [];
-  var nodes    = allNodes.filter(function (n) { return visible.has(n.id); });
-  var edges    = allEdges.filter(function (e) { return visible.has(e.source) && visible.has(e.target); });
+  var visible   = networkState.visibleNodes;
+  var focusId   = networkState.focusNode;
+  var allNodes  = data.nodes || [];
+  var nodes     = allNodes.filter(function (n) { return visible.has(n.id); });
+  if (nodes.length > 120) {
+    nodes = nodes.slice(0, 120);
+  }
   var positions = networkState.positions;
   var cx = W / 2, cy = H / 2;
 
-  if (focusId && positions[focusId]) {
+  if (focusId) {
     positions[focusId] = { x: cx, y: cy };
   }
   nodes.forEach(function (n, i) {
     if (positions[n.id]) return;
-    var a = (i / nodes.length) * Math.PI * 2;
-    var r = Math.min(W, H) * 0.32;
+    var a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+    var r = Math.min(W, H) * (focusId ? 0.28 : 0.32);
     positions[n.id] = {
-      x: cx + Math.cos(a) * r + (Math.random() - 0.5) * 50,
-      y: cy + Math.sin(a) * r + (Math.random() - 0.5) * 50,
+      x: cx + Math.cos(a) * r + (Math.random() - 0.5) * 30,
+      y: cy + Math.sin(a) * r + (Math.random() - 0.5) * 30,
     };
   });
-  var iters = Math.min(120, 30 + nodes.length * 2);
+
+  var edges = networkState.visEdges || [];
+  var iters = Math.min(35, Math.max(18, Math.round(600 / Math.max(1, nodes.length))));
+
   for (var iter = 0; iter < iters; iter++) {
     for (var i = 0; i < nodes.length; i++) {
+      var pa = positions[nodes[i].id];
+      if (!pa) continue;
       for (var j = i + 1; j < nodes.length; j++) {
-        var pa = positions[nodes[i].id], pb = positions[nodes[j].id];
+        var pb = positions[nodes[j].id];
+        if (!pb) continue;
         var dx = pb.x - pa.x, dy = pb.y - pa.y;
-        var dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        var force = 1400 / (dist * dist);
-        dx = (dx / dist) * force; dy = (dy / dist) * force;
-        pa.x -= dx; pa.y -= dy; pb.x += dx; pb.y += dy;
+        var distSq = dx * dx + dy * dy;
+        if (distSq < 1) distSq = 1;
+        if (distSq > 120000) continue;
+        var dist = Math.sqrt(distSq);
+        var force = 1200 / distSq;
+        var fx = (dx / dist) * force;
+        var fy = (dy / dist) * force;
+        if (nodes[i].id !== focusId) { pa.x -= fx; pa.y -= fy; }
+        if (nodes[j].id !== focusId) { pb.x += fx; pb.y += fy; }
       }
     }
     edges.forEach(function (e) {
@@ -6371,26 +6493,28 @@ function _computeConceptLayout(W, H, data) {
       if (!pa || !pb) return;
       var dx = pb.x - pa.x, dy = pb.y - pa.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
-      var pull = Math.min(1, (e.weight || 1) / 4);
-      var ideal = nodes.length < 20 ? 130 : 100;
-      var force = (dist - ideal) * 0.014 * pull;
-      dx = (dx / Math.max(1, dist)) * force; dy = (dy / Math.max(1, dist)) * force;
-      pa.x += dx; pa.y += dy; pb.x -= dx; pb.y -= dy;
+      var pull = Math.min(1, (e.weight || 1) / 3);
+      var ideal = nodes.length < 25 ? 120 : 85;
+      var force = (dist - ideal) * 0.015 * pull;
+      var fx = (dx / Math.max(1, dist)) * force;
+      var fy = (dy / Math.max(1, dist)) * force;
+      if (e.source !== focusId) { pa.x += fx; pa.y += fy; }
+      if (e.target !== focusId) { pb.x += fx; pb.y += fy; }
     });
     nodes.forEach(function (n) {
       if (n.id === focusId) return;
       var p = positions[n.id];
-      p.x += (cx - p.x) * 0.006;
-      p.y += (cy - p.y) * 0.006;
+      if (!p) return;
+      p.x += (cx - p.x) * 0.005;
+      p.y += (cy - p.y) * 0.005;
     });
   }
 }
 
-// –– 工程网格星图动画主循环 ––
+// –– 工程网格星图动画主循环（优化批处理绘制与帧率） ––
 function animateConceptNetwork(canvas, ctx, W, H, data) {
   if (_netRAF) { cancelAnimationFrame(_netRAF); _netRAF = null; }
 
-  // 每节点脉动参数（首次生成，复用）
   if (!data._twinkle) {
     data._twinkle = {};
     (data.nodes || []).forEach(function (n) {
@@ -6402,17 +6526,15 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
     });
   }
 
-  // 网格参数
-  var GRID = 26;           // 小格间距 px
-  var MAJOR = 5;           // 每 N 格画一条粗线
-  var ROT_SPEED = 0.00012; // rad/frame ≈ 0.41°/s，约 14 分钟一圈
+  var GRID = 26;
+  var MAJOR = 5;
+  var ROT_SPEED = 0.00012;
 
   var t0 = performance.now();
 
   function frame(now) {
     var t         = (now - t0) / 1000;
     var allNodes  = data.nodes || [];
-    var allEdges  = data.edges || [];
     var visible   = networkState.visibleNodes;
     var focusId   = networkState.focusNode;
     var hoverId   = networkState.hoverNode;
@@ -6426,9 +6548,9 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
     _netRotAngle += ROT_SPEED;
 
     var nodes    = allNodes.filter(function (n) { return visible.has(n.id); });
-    var visEdges = allEdges.filter(function (e) { return visible.has(e.source) && visible.has(e.target); });
+    var visEdges = networkState.visEdges || [];
 
-    // ── 静态背景：米色底 + 工程网格 ──
+    // 背景
     ctx.fillStyle = '#EBE6D9';
     ctx.fillRect(0, 0, W, H);
 
@@ -6467,58 +6589,72 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
       return;
     }
 
-    // ── 旋转坐标系（仅网络层）──
+    // 旋转网络层
     var cx = W / 2, cy = H / 2;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(_netRotAngle);
     ctx.translate(-cx, -cy);
 
-    // ── 边（星图连线：渐变，节点端较深，中段淡）──
-    visEdges.forEach(function (e) {
+    // 批量渲染常规连线（2 次 stroke 代替数千次渐变对象分配）
+    var focusEdges = [];
+    ctx.beginPath();
+    for (var ei = 0; ei < visEdges.length; ei++) {
+      var e = visEdges[ei];
       var pa = positions[e.source], pb = positions[e.target];
-      if (!pa || !pb) return;
-      var w    = e.weight || 1;
-      var isFE = (e.source === focusId || e.target === focusId);
-      var baseA = isFE ? 0.45 : Math.min(0.22, 0.05 + 0.045 * w);
-      var grad  = ctx.createLinearGradient(pa.x, pa.y, pb.x, pb.y);
-      grad.addColorStop(0,   'rgba(100,88,60,' + baseA.toFixed(3) + ')');
-      grad.addColorStop(0.5, 'rgba(100,88,60,' + (baseA * 0.15).toFixed(3) + ')');
-      grad.addColorStop(1,   'rgba(100,88,60,' + baseA.toFixed(3) + ')');
-      ctx.beginPath();
-      ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
-      ctx.strokeStyle = grad;
-      ctx.lineWidth   = isFE ? 1.2 : 0.7;
-      ctx.stroke();
-    });
+      if (!pa || !pb) continue;
+      if (e.source === focusId || e.target === focusId || e.source === hoverId || e.target === hoverId) {
+        focusEdges.push(e);
+        continue;
+      }
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+    }
+    ctx.strokeStyle = 'rgba(110,96,68,0.18)';
+    ctx.lineWidth   = 0.7;
+    ctx.stroke();
 
-    // ── 节点（小圆点 + 脉动光晕）──
-    nodes.forEach(function (n) {
+    // 高亮连接线
+    if (focusEdges.length) {
+      ctx.beginPath();
+      for (var fei = 0; fei < focusEdges.length; fei++) {
+        var fe = focusEdges[fei];
+        var fpa = positions[fe.source], fpb = positions[fe.target];
+        if (!fpa || !fpb) continue;
+        ctx.moveTo(fpa.x, fpa.y);
+        ctx.lineTo(fpb.x, fpb.y);
+      }
+      ctx.strokeStyle = 'rgba(180,138,40,0.65)';
+      ctx.lineWidth   = 1.4;
+      ctx.stroke();
+    }
+
+    // 渲染节点
+    for (var ni = 0; ni < nodes.length; ni++) {
+      var n = nodes[ni];
       var p = positions[n.id];
-      if (!p) return;
+      if (!p) continue;
       var tw      = data._twinkle[n.id] || { phase: 0, freq: 0.45, ampR: 0.10 };
       var pulse   = Math.sin(t * tw.freq * Math.PI * 2 + tw.phase);
       var isFocus = (n.id === focusId);
       var isHover = (n.id === hoverId);
       var lit     = isFocus || n.anchor || isHover;
 
-      // 缩小尺寸：max 1.8, min 6  (原来 2.5/9)
       var baseR = Math.max(1.8, Math.min(6, 1.4 + Math.sqrt(n.freq || 1) * 1.2));
       var r     = (isFocus ? baseR * 1.4 : isHover ? baseR * 1.2 : baseR) * (1 + tw.ampR * pulse);
 
-      // 光晕（浅背景下用低透明度暖金）
-      var glowR = r + (lit ? 11 : 6) + (lit ? 3 : 1) * pulse;
-      var glowA = lit ? (0.22 + 0.08 * pulse) : (0.06 + 0.03 * pulse);
-      var grd   = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(1, glowR));
-      grd.addColorStop(0, 'rgba(180,138,40,' + glowA.toFixed(3) + ')');
-      grd.addColorStop(1, 'rgba(180,138,40,0)');
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, Math.max(1, glowR), 0, Math.PI * 2);
-      ctx.fillStyle = grd;
-      ctx.fill();
+      // 光晕（仅在焦点/锚点/悬浮时开启径向渐变，大幅降低开销）
+      if (lit) {
+        var glowR = r + 11 + 3 * pulse;
+        var glowA = 0.22 + 0.08 * pulse;
+        var grd   = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(1, glowR));
+        grd.addColorStop(0, 'rgba(180,138,40,' + glowA.toFixed(3) + ')');
+        grd.addColorStop(1, 'rgba(180,138,40,0)');
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(1, glowR), 0, Math.PI * 2);
+        ctx.fillStyle = grd;
+        ctx.fill();
 
-      // 焦点/锚点轨道环
-      if (isFocus || n.anchor) {
         var ringR = r + (isFocus ? 8 : 5) + 1.5 * pulse;
         ctx.beginPath();
         ctx.arc(p.x, p.y, ringR, 0, Math.PI * 2);
@@ -6536,38 +6672,39 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
         : 'rgba(72,65,50,' + bodyA.toFixed(3) + ')';
       ctx.fill();
 
-      // 焦点节点标签（抵消旋转，保持文字竖直）
-      if (isFocus) {
+      // 标签显示（抵消旋转保持水平）
+      if (isFocus || isHover) {
         ctx.save();
         ctx.translate(p.x, p.y + r + 16);
         ctx.rotate(-_netRotAngle);
         var label  = n.label || n.id;
         if (label.length > 14) label = label.slice(0, 14) + '…';
         var prefix = n.kind === 'tag' ? '#' : '';
-        ctx.fillStyle  = 'rgba(160,120,30,0.95)';
+        ctx.fillStyle  = isFocus ? 'rgba(160,120,30,0.95)' : 'rgba(72,65,50,0.85)';
         ctx.font       = "bold 11px 'Share Tech Mono', sans-serif";
         ctx.textAlign  = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText((n.anchor ? '⚓ ' : '') + prefix + label, 0, 0);
         ctx.restore();
       }
-    });
+    }
 
-    ctx.restore(); // 结束旋转坐标系
+    ctx.restore();
 
-    // ── HUD（不旋转）──
+    // HUD 状态
+    var totalN = data.total_nodes != null ? data.total_nodes : (data.nodes || []).length;
     if (!focusId) {
-      ctx.fillStyle    = 'rgba(90,80,55,0.35)';
+      ctx.fillStyle    = 'rgba(90,80,55,0.45)';
       ctx.font         = "11px 'Share Tech Mono', monospace";
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('TOP ' + nodes.length + ' NODES · 悬浮看详情 · 点击展开邻居', W / 2, 22);
+      ctx.fillText('TOP ' + nodes.length + ' / ' + totalN + ' NODES · 点击节点展开关联 · 支持搜索查找', W / 2, 22);
     } else {
-      ctx.fillStyle    = 'rgba(170,128,35,0.8)';
+      ctx.fillStyle    = 'rgba(170,128,35,0.85)';
       ctx.font         = "11px 'Share Tech Mono', monospace";
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('DEPTH ' + networkState.depth + ' · ' + nodes.length + ' NODES · 点击焦点节点返回全局', W / 2, 22);
+      ctx.fillText('DEPTH ' + networkState.depth + ' · ' + nodes.length + ' 强关联节点 · 点击焦点节点返回全局', W / 2, 22);
     }
 
     _netRAF = requestAnimationFrame(frame);
@@ -6596,9 +6733,9 @@ function injectNetworkControls() {
 
   bar.innerHTML = [
     '<span>展开深度 / DEPTH</span>',
-    '<input id="depth-slider" type="range" min="1" max="4" value="2" style="width:100px;accent-color:var(--accent);">',
-    '<span id="depth-label" style="color:var(--accent);font-weight:600;min-width:16px">2</span>',
-    '<span style="color:var(--text-light);font-size:11px;margin-left:8px">点击节点展开 · 再次点击返回全局</span>'
+    '<input id="depth-slider" type="range" min="1" max="3" value="2" style="width:90px;accent-color:var(--accent);">',
+    '<span id="depth-label" style="color:var(--accent);font-weight:600;min-width:14px">2</span>',
+    '<span style="color:var(--text-light);font-size:11px;margin-left:8px">单点展开限制保护：优先连接强关联概念 · 再次点击返回全局</span>'
   ].join('');
 
   parent.insertBefore(bar, canvas);
@@ -6610,33 +6747,46 @@ function injectNetworkControls() {
     if (networkState.focusNode && networkData) {
       networkState.visibleNodes = getNeighbors(networkState.focusNode, v, networkData);
       networkState.positions    = {};
+      updateVisibleEdges(networkData);
       networkState.needsLayout  = true;
     }
   });
 }
 
-// 旧的桶级网络（embedding 模式仍然能切到）
+// 旧的桶级网络（embedding 模式截取 top 60 避免 O(N^2) 卡死）
 function drawBucketNetwork(ctx, W, H, data) {
-  var nodes = data.nodes || [], edges = data.edges || [];
-  if (!nodes.length) {
+  var allNodes = data.nodes || [], allEdges = data.edges || [];
+  if (!allNodes.length) {
     ctx.fillStyle = '#C7C9BC'; ctx.fillRect(0,0,W,H);
     ctx.fillStyle = '#8A8070';
     ctx.fillText('没有记忆桶', W/2, H/2);
     return;
   }
+  var nodes = allNodes.slice().sort(function(a, b) {
+    return (b.score || 0) - (a.score || 0);
+  }).slice(0, 60);
+  var nodeSet = new Set(nodes.map(function(n) { return n.id; }));
+  var edges = allEdges.filter(function(e) {
+    return nodeSet.has(e.source) && nodeSet.has(e.target);
+  });
+
   var positions = {};
   var cx = W/2, cy = H/2;
   nodes.forEach(function(n, i) {
-    var a = (i/nodes.length)*Math.PI*2;
+    var a = (i/Math.max(1, nodes.length))*Math.PI*2;
     var r = Math.min(W,H)*0.35;
-    positions[n.id] = { x: cx+Math.cos(a)*r+(Math.random()-0.5)*50, y: cy+Math.sin(a)*r+(Math.random()-0.5)*50 };
+    positions[n.id] = { x: cx+Math.cos(a)*r+(Math.random()-0.5)*40, y: cy+Math.sin(a)*r+(Math.random()-0.5)*40 };
   });
-  for (var iter=0; iter<60; iter++) {
+  for (var iter=0; iter<25; iter++) {
     for (var i=0; i<nodes.length; i++) for (var j=i+1; j<nodes.length; j++) {
       var pa=positions[nodes[i].id], pb=positions[nodes[j].id];
+      if (!pa || !pb) continue;
       var dx=pb.x-pa.x, dy=pb.y-pa.y;
-      var dist=Math.max(1, Math.sqrt(dx*dx+dy*dy));
-      var f=800/(dist*dist);
+      var distSq=dx*dx+dy*dy;
+      if (distSq < 1) distSq = 1;
+      if (distSq > 100000) continue;
+      var dist=Math.sqrt(distSq);
+      var f=800/distSq;
       pa.x-=(dx/dist)*f; pa.y-=(dy/dist)*f; pb.x+=(dx/dist)*f; pb.y+=(dy/dist)*f;
     }
     edges.forEach(function(e) {
@@ -6649,7 +6799,7 @@ function drawBucketNetwork(ctx, W, H, data) {
       pa.x += (dx/Math.max(1,dist))*f; pa.y += (dy/Math.max(1,dist))*f;
       pb.x -= (dx/Math.max(1,dist))*f; pb.y -= (dy/Math.max(1,dist))*f;
     });
-    nodes.forEach(function(n){var p=positions[n.id]; p.x+=(cx-p.x)*0.01; p.y+=(cy-p.y)*0.01;});
+    nodes.forEach(function(n){var p=positions[n.id]; if (p) { p.x+=(cx-p.x)*0.01; p.y+=(cy-p.y)*0.01; } });
   }
   ctx.fillStyle='#C7C9BC'; ctx.fillRect(0,0,W,H);
   edges.forEach(function(e){
@@ -6662,9 +6812,9 @@ function drawBucketNetwork(ctx, W, H, data) {
   var colors = { dynamic:'#2F4F4F', permanent:'#9A7B4F', feel:'#8B6A6A', archived:'#B0A590' };
   nodes.forEach(function(n){
     var p=positions[n.id];
+    if (!p) return;
     var r=Math.max(4, Math.min(14, (n.score||0)*0.8));
     var color = colors[n.type] || '#2F4F4F';
-    // anchor 节点：朱砂外圈 (#10)
     if (n.anchor) {
       ctx.beginPath(); ctx.arc(p.x,p.y,r+6,0,Math.PI*2);
       ctx.strokeStyle='#B85C3C'; ctx.lineWidth=2; ctx.stroke();

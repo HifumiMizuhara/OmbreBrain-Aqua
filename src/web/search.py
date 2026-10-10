@@ -231,6 +231,26 @@ def register(mcp) -> None:
         # 兼容旧入口 mode=wikilinks → 等价 concept
         if mode == "wikilinks":
             mode = "concept"
+        raw_limit = request.query_params.get("limit", "").strip().lower()
+        if raw_limit in ("all", "0", "-1"):
+            limit = 0
+        elif raw_limit:
+            try:
+                limit = max(1, int(raw_limit))
+            except (TypeError, ValueError):
+                limit = 600
+        else:
+            limit = 600
+
+        try:
+            min_weight = max(1, int(request.query_params.get("min_weight") or 1))
+        except (TypeError, ValueError):
+            min_weight = 1
+        try:
+            min_freq = max(1, int(request.query_params.get("min_freq") or 1))
+        except (TypeError, ValueError):
+            min_freq = 1
+
         try:
             all_buckets = await sh.bucket_mgr.list_all(include_archive=False)
             all_buckets = [
@@ -239,17 +259,32 @@ def register(mcp) -> None:
             ]
 
             if mode == "embedding":
-                # 旧的桶→桶相似度图（保留）
+                # 旧的桶→桶相似度图（保留），若桶过多按重要度截取 top 120 防止 O(N^2) 卡死
+                if len(all_buckets) > 120:
+                    all_buckets.sort(
+                        key=lambda b: (
+                            1 if b.get("metadata", {}).get("anchor") else 0,
+                            1 if b.get("metadata", {}).get("pinned") else 0,
+                            float(b.get("metadata", {}).get("importance") or 5),
+                        ),
+                        reverse=True,
+                    )
+                    all_buckets = all_buckets[:120]
+
                 nodes = []
                 for b in all_buckets:
                     meta = b.get("metadata", {})
                     bid = b["id"]
+                    try:
+                        score_val = sh.decay_engine.calculate_score(meta)
+                    except Exception:
+                        score_val = float(meta.get("importance") or 5)
                     nodes.append({
                         "id": bid,
                         "name": meta.get("name", bid),
                         "kind": "bucket",
                         "type": meta.get("type", "dynamic"),
-                        "score": sh.decay_engine.calculate_score(meta),
+                        "score": score_val,
                         "resolved": meta.get("resolved", False),
                         "pinned": meta.get("pinned", False),
                         "anchor": bool(meta.get("anchor")),  # #10
@@ -267,13 +302,16 @@ def register(mcp) -> None:
                         sim = sh.embedding_engine._cosine_similarity(embeddings[id_a], embeddings[id_b])
                         if sim > 0.5:
                             edges.append({"source": id_a, "target": id_b, "weight": round(sim, 3), "kind": "similarity"})
-                return JSONResponse({"nodes": nodes, "edges": edges, "mode": mode})
+                return JSONResponse({
+                    "nodes": nodes,
+                    "edges": edges,
+                    "total_nodes": len(nodes),
+                    "total_edges": len(edges),
+                    "mode": mode,
+                })
 
             # ---- concept mode ----
-            # token_id → {"label": str, "kind": "wiki"|"tag"|"mixed", "freq": int, "buckets": [bucket_id...]}
-            # token_id 用规范化后的 lower-case 文本作 key，避免 "Memory" 与 "memory" 拆成两个节点
             tokens: dict[str, dict] = {}
-            # bucket_id → set(token_id)，给后面共现统计用
             bucket_tokens: dict[str, set] = {}
 
             def _norm(s: str) -> str:
@@ -296,11 +334,10 @@ def register(mcp) -> None:
                         node["freq"] += 1
                         node["buckets"].append(bid)
                         seen.add(key)
-                    # wiki 优先；若曾被标记为 tag，升级为 mixed
                     if node["kind"] == "tag":
                         node["kind"] = "mixed"
 
-                # 2) frontmatter 的 tags（list 或字符串都兼容）
+                # 2) frontmatter 的 tags
                 raw_tags = meta.get("tags") or []
                 if isinstance(raw_tags, str):
                     raw_tags = [t.strip() for t in raw_tags.split(",")]
@@ -321,7 +358,6 @@ def register(mcp) -> None:
                     bucket_tokens[bid] = seen
 
             # 共现边：同一个桶里的 token 两两相连，权重 = 共同出现的桶数
-            # 复杂度上限是 sum(k_i^2) 其中 k_i 是单桶 token 数；正常都很小
             co_count: dict[tuple[str, str], int] = {}
             for bid, toks in bucket_tokens.items():
                 ts = sorted(toks)
@@ -330,22 +366,66 @@ def register(mcp) -> None:
                         co_key: tuple[str, str] = (a, b_)
                         co_count[co_key] = co_count.get(co_key, 0) + 1
 
-            # #10: 标记「出现在至少一个 anchor 桶里」的 concept token
+            total_nodes = len(tokens)
+            total_edges = len(co_count)
+
+            # 阈值过滤
+            if min_weight > 1:
+                co_count = {k: w for k, w in co_count.items() if w >= min_weight}
+            if min_freq > 1:
+                tokens = {k: v for k, v in tokens.items() if v["freq"] >= min_freq}
+
+            # 统计各 token 的连接度 (degree)
+            token_degree: dict[str, int] = {}
+            for (a, b_) in co_count.keys():
+                token_degree[a] = token_degree.get(a, 0) + 1
+                token_degree[b_] = token_degree.get(b_, 0) + 1
+
             anchor_bucket_ids = {
                 b["id"] for b in all_buckets
                 if (b.get("metadata") or {}).get("anchor")
             }
+
+            # 若总节点数超过 limit（默认 600），筛选全局核心概念
+            retained_keys = set(tokens.keys())
+            if limit > 0 and len(tokens) > limit:
+                sorted_tokens = sorted(
+                    tokens.keys(),
+                    key=lambda k: (
+                        1 if (anchor_bucket_ids and any(bid in anchor_bucket_ids for bid in tokens[k]["buckets"])) else 0,
+                        tokens[k]["freq"],
+                        token_degree.get(k, 0),
+                    ),
+                    reverse=True,
+                )
+                retained_keys = set(sorted_tokens[:limit])
+
             nodes = [
                 {
-                    "id": k, "label": v["label"], "kind": v["kind"],
-                    "freq": v["freq"], "buckets": v["buckets"],
-                    "anchor": bool(anchor_bucket_ids and any(bid in anchor_bucket_ids for bid in v["buckets"])),
+                    "id": k,
+                    "label": tokens[k]["label"],
+                    "kind": tokens[k]["kind"],
+                    "freq": tokens[k]["freq"],
+                    "degree": token_degree.get(k, 0),
+                    "buckets": tokens[k]["buckets"],
+                    "anchor": bool(anchor_bucket_ids and any(bid in anchor_bucket_ids for bid in tokens[k]["buckets"])),
                 }
-                for k, v in tokens.items()
+                for k in retained_keys
+                if k in tokens
             ]
-            edges = [{"source": a, "target": b_, "weight": w, "kind": "cooccur"} for (a, b_), w in co_count.items()]
+            edges = [
+                {"source": a, "target": b_, "weight": w, "kind": "cooccur"}
+                for (a, b_), w in co_count.items()
+                if a in retained_keys and b_ in retained_keys
+            ]
 
-            return JSONResponse({"nodes": nodes, "edges": edges, "mode": mode})
+            return JSONResponse({
+                "nodes": nodes,
+                "edges": edges,
+                "total_nodes": total_nodes,
+                "total_edges": total_edges,
+                "mode": mode,
+            })
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
