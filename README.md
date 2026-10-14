@@ -9,7 +9,7 @@
 
 A long-term emotional memory system for Claude, Google Antigravity, and any MCP client. Forked from [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) as **Ombre Brain Aqua**, maintained by **Hifumi Mizuhara**. Tags memories using Russell's valence/arousal coordinates, stores them as Obsidian-compatible Markdown, connects via MCP, with forgetting curve and vector semantic search.
 
-> **提示词指南**：Claude 端使用约定见 [docs/CLAUDE_PROMPT.md](docs/CLAUDE_PROMPT.md)；Google Antigravity 专用 MCP 指令见 [docs/ANTIGRAVITY_PROMPT.md](docs/ANTIGRAVITY_PROMPT.md)。
+> **提示词指南**：Claude 端使用约定见 [docs/CLAUDE_PROMPT.md](docs/CLAUDE_PROMPT.md)；Google Antigravity 专用 MCP 指令见 [docs/ANTIGRAVITY_PROMPT.md](docs/ANTIGRAVITY_PROMPT.md)；Gemini 网页端 (Spark) 专用 MCP 指南见 [docs/GEMINI_SPARK_PROMPT.md](docs/GEMINI_SPARK_PROMPT.md)。
 >
 > **开发者文档**：架构 / API / 配置细节请见 [docs/INTERNALS.md](docs/INTERNALS.md)。
 >
