@@ -6165,10 +6165,14 @@ async function loadNetwork() {
   if (termEl) termEl.classList.remove('star-active');
 
   var ctx = canvas.getContext('2d');
-  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-  var W = canvas.offsetWidth, H = canvas.offsetHeight;
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.offsetWidth || 800;
+  var H = canvas.offsetHeight || 600;
+  if (W < 200) W = 800;
+  if (H < 200) H = 600;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.scale(dpr, dpr);
 
   ctx.fillStyle = '#C7C9BC';
   ctx.fillRect(0, 0, W, H);
@@ -6424,6 +6428,11 @@ function getNeighbors(startId, depth, data, maxTotalNodes) {
 // –– 碰撞检测（返回被点击的节点 id 或 null） ––
 function hitTest(mx, my, W, H) {
   if (!networkData) return null;
+  var canvas = document.getElementById('network-canvas');
+  if (canvas) {
+    W = canvas.offsetWidth || W || 800;
+    H = canvas.offsetHeight || H || 600;
+  }
   var cx  = W / 2, cy = H / 2;
   var cos = Math.cos(-_netRotAngle), sin = Math.sin(-_netRotAngle);
   var rx  = cx + (mx - cx) * cos - (my - cy) * sin;
@@ -6431,26 +6440,29 @@ function hitTest(mx, my, W, H) {
   var nodes = networkData.nodes || [];
   var hit = null;
   nodes.forEach(function (n) {
-    if (!networkState.visibleNodes.has(n.id)) return;
+    if (!networkState.visibleNodes || !networkState.visibleNodes.has(n.id)) return;
     var p = networkState.positions[n.id];
     if (!p) return;
-    var r  = Math.max(4, Math.min(14, 2 + Math.sqrt(n.freq || 1) * 2.5)) + 5;
+    var r  = Math.max(5, Math.min(16, 3 + Math.sqrt(n.freq || 1) * 2.5)) + 6;
     var dx = rx - p.x, dy = ry - p.y;
     if (dx * dx + dy * dy < r * r) hit = n.id;
   });
   return hit;
 }
 
-// –– 布局计算（有界快速力导向，完成即稳定） ––
+// –– 布局计算（有界快速退火收敛力导向，彻底杜绝坐标发散） ––
 function _computeConceptLayout(W, H, data) {
   var visible   = networkState.visibleNodes;
   var focusId   = networkState.focusNode;
   var allNodes  = data.nodes || [];
-  var nodes     = allNodes.filter(function (n) { return visible.has(n.id); });
+  var nodes     = allNodes.filter(function (n) { return visible && visible.has(n.id); });
+  if (!nodes.length) return;
   if (nodes.length > 120) {
     nodes = nodes.slice(0, 120);
   }
   var positions = networkState.positions;
+  W = (W && W > 200) ? W : 800;
+  H = (H && H > 200) ? H : 600;
   var cx = W / 2, cy = H / 2;
 
   if (focusId) {
@@ -6461,15 +6473,19 @@ function _computeConceptLayout(W, H, data) {
     var a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
     var r = Math.min(W, H) * (focusId ? 0.28 : 0.32);
     positions[n.id] = {
-      x: cx + Math.cos(a) * r + (Math.random() - 0.5) * 30,
-      y: cy + Math.sin(a) * r + (Math.random() - 0.5) * 30,
+      x: cx + Math.cos(a) * r + (Math.random() - 0.5) * 24,
+      y: cy + Math.sin(a) * r + (Math.random() - 0.5) * 24,
     };
   });
 
   var edges = networkState.visEdges || [];
-  var iters = Math.min(35, Math.max(18, Math.round(600 / Math.max(1, nodes.length))));
+  var iters = Math.min(40, Math.max(22, Math.round(600 / Math.max(1, nodes.length))));
 
   for (var iter = 0; iter < iters; iter++) {
+    // 模拟退火衰减 (1.0 -> 0.25)
+    var alpha = 1.0 - (iter / iters) * 0.75;
+
+    // 1) 节点间斥力（有硬上限与退火衰减，防止除以 0 或近距爆数）
     for (var i = 0; i < nodes.length; i++) {
       var pa = positions[nodes[i].id];
       if (!pa) continue;
@@ -6478,37 +6494,60 @@ function _computeConceptLayout(W, H, data) {
         if (!pb) continue;
         var dx = pb.x - pa.x, dy = pb.y - pa.y;
         var distSq = dx * dx + dy * dy;
-        if (distSq < 1) distSq = 1;
-        if (distSq > 120000) continue;
+        if (distSq < 16) distSq = 16;
+        if (distSq > 160000) continue;
         var dist = Math.sqrt(distSq);
-        var force = 1200 / distSq;
+        var force = Math.min(18, 1400 / distSq) * alpha;
         var fx = (dx / dist) * force;
         var fy = (dy / dist) * force;
         if (nodes[i].id !== focusId) { pa.x -= fx; pa.y -= fy; }
         if (nodes[j].id !== focusId) { pb.x += fx; pb.y += fy; }
       }
     }
+
+    // 2) 连线引力（两端反向拉近：pa += fx, pb -= fx，硬上限截断）
     edges.forEach(function (e) {
       var pa = positions[e.source], pb = positions[e.target];
       if (!pa || !pb) return;
       var dx = pb.x - pa.x, dy = pb.y - pa.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 1) return;
       var pull = Math.min(1, (e.weight || 1) / 3);
-      var ideal = nodes.length < 25 ? 120 : 85;
-      var force = (dist - ideal) * 0.015 * pull;
-      var fx = (dx / Math.max(1, dist)) * force;
-      var fy = (dy / Math.max(1, dist)) * force;
+      var ideal = nodes.length < 25 ? 110 : 80;
+      var force = (dist - ideal) * 0.02 * pull * alpha;
+      // 单步引力位移截断（硬边界 clamp，绝对收敛）
+      var maxSpring = 12 * alpha;
+      force = Math.max(-maxSpring, Math.min(maxSpring, force));
+      var fx = (dx / dist) * force;
+      var fy = (dy / dist) * force;
       if (e.source !== focusId) { pa.x += fx; pa.y += fy; }
-      if (e.target !== focusId) { pb.x += fx; pb.y += fy; }
+      if (e.target !== focusId) { pb.x -= fx; pb.y -= fy; }
     });
+
+    // 3) 向心微重力与视口约束
+    var maxRx = W * 0.42, maxRy = H * 0.42;
     nodes.forEach(function (n) {
       if (n.id === focusId) return;
       var p = positions[n.id];
       if (!p) return;
-      p.x += (cx - p.x) * 0.005;
-      p.y += (cy - p.y) * 0.005;
+      p.x += (cx - p.x) * 0.015;
+      p.y += (cy - p.y) * 0.015;
+      if (p.x < cx - maxRx) p.x = cx - maxRx;
+      else if (p.x > cx + maxRx) p.x = cx + maxRx;
+      if (p.y < cy - maxRy) p.y = cy - maxRy;
+      else if (p.y > cy + maxRy) p.y = cy + maxRy;
     });
   }
+
+  // 4) NaN / Infinity 防御
+  nodes.forEach(function (n, i) {
+    var p = positions[n.id];
+    if (!p || !isFinite(p.x) || !isFinite(p.y)) {
+      var a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+      var r = Math.min(W, H) * 0.3;
+      positions[n.id] = { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+    }
+  });
 }
 
 // –– 工程网格星图动画主循环（优化批处理绘制与帧率） ––
@@ -6533,6 +6572,18 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
   var t0 = performance.now();
 
   function frame(now) {
+    var curW = canvas.offsetWidth || W;
+    var curH = canvas.offsetHeight || H;
+    if (curW > 200 && curH > 200 && (Math.abs(curW - W) > 5 || Math.abs(curH - H) > 5)) {
+      W = curW;
+      H = curH;
+      var dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+      ctx.scale(dpr, dpr);
+      networkState.needsLayout = true;
+    }
+
     var t         = (now - t0) / 1000;
     var allNodes  = data.nodes || [];
     var visible   = networkState.visibleNodes;
@@ -6547,7 +6598,7 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
 
     _netRotAngle += ROT_SPEED;
 
-    var nodes    = allNodes.filter(function (n) { return visible.has(n.id); });
+    var nodes    = allNodes.filter(function (n) { return visible && visible.has(n.id); });
     var visEdges = networkState.visEdges || [];
 
     // 背景
@@ -6602,7 +6653,7 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
     for (var ei = 0; ei < visEdges.length; ei++) {
       var e = visEdges[ei];
       var pa = positions[e.source], pb = positions[e.target];
-      if (!pa || !pb) continue;
+      if (!pa || !pb || !isFinite(pa.x) || !isFinite(pb.x)) continue;
       if (e.source === focusId || e.target === focusId || e.source === hoverId || e.target === hoverId) {
         focusEdges.push(e);
         continue;
@@ -6620,7 +6671,7 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
       for (var fei = 0; fei < focusEdges.length; fei++) {
         var fe = focusEdges[fei];
         var fpa = positions[fe.source], fpb = positions[fe.target];
-        if (!fpa || !fpb) continue;
+        if (!fpa || !fpb || !isFinite(fpa.x) || !isFinite(fpb.x)) continue;
         ctx.moveTo(fpa.x, fpa.y);
         ctx.lineTo(fpb.x, fpb.y);
       }
@@ -6633,14 +6684,14 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
     for (var ni = 0; ni < nodes.length; ni++) {
       var n = nodes[ni];
       var p = positions[n.id];
-      if (!p) continue;
+      if (!p || !isFinite(p.x) || !isFinite(p.y)) continue;
       var tw      = data._twinkle[n.id] || { phase: 0, freq: 0.45, ampR: 0.10 };
       var pulse   = Math.sin(t * tw.freq * Math.PI * 2 + tw.phase);
       var isFocus = (n.id === focusId);
       var isHover = (n.id === hoverId);
       var lit     = isFocus || n.anchor || isHover;
 
-      var baseR = Math.max(1.8, Math.min(6, 1.4 + Math.sqrt(n.freq || 1) * 1.2));
+      var baseR = Math.max(3.2, Math.min(9.5, 2.2 + Math.sqrt(n.freq || 1) * 1.2));
       var r     = (isFocus ? baseR * 1.4 : isHover ? baseR * 1.2 : baseR) * (1 + tw.ampR * pulse);
 
       // 光晕（仅在焦点/锚点/悬浮时开启径向渐变，大幅降低开销）
@@ -6664,7 +6715,7 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
       }
 
       // 点本体
-      var bodyA = lit ? (0.92 + 0.08 * pulse) : (0.48 + 0.18 * pulse);
+      var bodyA = lit ? (0.95 + 0.05 * pulse) : (0.55 + 0.18 * pulse);
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fillStyle = lit
@@ -6672,16 +6723,33 @@ function animateConceptNetwork(canvas, ctx, W, H, data) {
         : 'rgba(72,65,50,' + bodyA.toFixed(3) + ')';
       ctx.fill();
 
-      // 标签显示（抵消旋转保持水平）
-      if (isFocus || isHover) {
+      // 常驻微轮廓（增强点阵工业仪表面板质感）
+      if (!lit && r > 4.5) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(140,128,100,0.22)';
+        ctx.lineWidth   = 0.6;
+        ctx.stroke();
+      }
+
+      // 标签显示（抵消旋转保持水平）：
+      // 1) 焦点或悬浮时全量高亮
+      // 2) 节点总数少于等于 35 时常驻显示所有标签
+      // 3) 更多节点时常驻显示频次 Top 12 及 anchor 标签
+      var shouldShowLabel = isFocus || isHover || (nodes.length <= 35) || (ni < 12) || n.anchor;
+      if (shouldShowLabel) {
         ctx.save();
-        ctx.translate(p.x, p.y + r + 16);
+        ctx.translate(p.x, p.y + r + 10);
         ctx.rotate(-_netRotAngle);
         var label  = n.label || n.id;
-        if (label.length > 14) label = label.slice(0, 14) + '…';
+        if (label.length > 12) label = label.slice(0, 12) + '…';
         var prefix = n.kind === 'tag' ? '#' : '';
-        ctx.fillStyle  = isFocus ? 'rgba(160,120,30,0.95)' : 'rgba(72,65,50,0.85)';
-        ctx.font       = "bold 11px 'Share Tech Mono', sans-serif";
+        ctx.fillStyle  = isFocus
+          ? 'rgba(160,120,30,0.95)'
+          : (isHover ? 'rgba(60,50,30,0.95)' : 'rgba(95,85,65,0.72)');
+        ctx.font       = (isFocus || isHover)
+          ? "bold 11px 'Share Tech Mono', sans-serif"
+          : "10px 'Share Tech Mono', sans-serif";
         ctx.textAlign  = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText((n.anchor ? '⚓ ' : '') + prefix + label, 0, 0);
