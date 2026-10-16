@@ -152,7 +152,6 @@ async def test_anti_sponge_protection_prevents_infinite_merges(
     # 首次新建
     res1 = await hold(content="事件片段 0")
     assert res1.startswith("新建→")
-    first_id = res1.split("→", 1)[1].split()[0]
 
     # 模拟多次连续合并
     merged_count = 0
