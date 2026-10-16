@@ -3391,6 +3391,7 @@ class BucketManager:
         vector_scores: Optional[dict[str, float]] = None,
         include_archive: bool = False,
         allowed_bucket_ids: Optional[set[str]] = None,
+        relevance_only: bool = False,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -3530,8 +3531,10 @@ class BucketManager:
                         if q_tokens:
                             matched_count = sum(1 for t in q_tokens if t in hay)
                             if matched_count > 0:
-                                literal_hit = True
-                                literal_match_ratio = matched_count / len(q_tokens)
+                                ratio = matched_count / len(q_tokens)
+                                if not relevance_only or ratio >= 0.6:
+                                    literal_hit = True
+                                    literal_match_ratio = ratio
 
                 # Dim 1: topic relevance (fuzzy text, 0~1)
                 topic_score = self._calc_topic_score(query, bucket)
@@ -3551,29 +3554,42 @@ class BucketManager:
                 touch_score = self._calc_touch_score(meta)
 
                 # --- Weighted sum / 加权求和 ---
-                total = (
-                    topic_score * self.w_topic
-                    + emotion_score * self.w_emotion
-                    + time_score * self.w_time
-                    + importance_score * self.w_importance
-                    + touch_score * self.w_touch
-                )
-                weight_sum = (
-                    self.w_topic + self.w_emotion + self.w_time
-                    + self.w_importance + self.w_touch
-                )
-                # Dim 6: semantic similarity — only when embedding is available (iter 2.1)
-                # 仅 embedding 可用时加入语义相似度维度；不可用时不影响 weight_sum 平衡
-                semantic_score = vector_scores.get(bucket["id"])
-                if semantic_score is not None:
-                    total += semantic_score * self.w_semantic
-                    weight_sum += self.w_semantic
-                # Dim 7: BM25 TF-IDF 关键词分（rank_bm25+jieba，软依赖，缺包时 bm25_scores={}）
-                if bm25_scores:
-                    total += bm25_scores.get(bucket["id"], 0.0) * self.w_bm25
-                    weight_sum += self.w_bm25
-                # Normalize to 0~100 for readability
-                normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
+                if relevance_only:
+                    # 纯相关性评分（用于合并候选检索，排除时间/频率/情绪/重要度等属性干扰）
+                    total = topic_score * self.w_topic
+                    weight_sum = self.w_topic
+                    semantic_score = vector_scores.get(bucket["id"])
+                    if semantic_score is not None:
+                        total += semantic_score * self.w_semantic
+                        weight_sum += self.w_semantic
+                    if bm25_scores:
+                        total += bm25_scores.get(bucket["id"], 0.0) * self.w_bm25
+                        weight_sum += self.w_bm25
+                    normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
+                else:
+                    total = (
+                        topic_score * self.w_topic
+                        + emotion_score * self.w_emotion
+                        + time_score * self.w_time
+                        + importance_score * self.w_importance
+                        + touch_score * self.w_touch
+                    )
+                    weight_sum = (
+                        self.w_topic + self.w_emotion + self.w_time
+                        + self.w_importance + self.w_touch
+                    )
+                    # Dim 6: semantic similarity — only when embedding is available (iter 2.1)
+                    # 仅 embedding 可用时加入语义相似度维度；不可用时不影响 weight_sum 平衡
+                    semantic_score = vector_scores.get(bucket["id"])
+                    if semantic_score is not None:
+                        total += semantic_score * self.w_semantic
+                        weight_sum += self.w_semantic
+                    # Dim 7: BM25 TF-IDF 关键词分（rank_bm25+jieba，软依赖，缺包时 bm25_scores={}）
+                    if bm25_scores:
+                        total += bm25_scores.get(bucket["id"], 0.0) * self.w_bm25
+                        weight_sum += self.w_bm25
+                    # Normalize to 0~100 for readability
+                    normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
 
                 # 字面命中加分 + 召回保障：修复短查询（如 2 字"杭州"）即使正文里有也
                 # 因加权分被各维度稀释到 fuzzy_threshold 以下而整条搜不到。
@@ -3585,29 +3601,6 @@ class BucketManager:
                 # Threshold check uses raw (pre-penalty) score so resolved buckets
                 # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
                 # remain reachable by keyword (penalty applied only to ranking).
-                # ⚠️ 已知设计债：这道门混了两类不同的东西。
-                #
-                # `normalized` 是七维加权和，其中 topic / bm25 / semantic 回答的是
-                # "这条记忆和查询有关吗"，而 emotion / time / importance / touch
-                # 回答的是"这条记忆本身怎么样"（新不新、重不重要、被摸过几次）。
-                # 两个问题被加成同一个分数，去过同一道门。
-                #
-                # 2026-08-18 对 917 桶真实记忆扫描过：相关性三维全为 0 却入选的
-                # 命中数是 **0**。但那是**算术上的巧合，不是设计上的保证**——
-                # 后四维权重合计 3.5/13.5，凑不满 fuzzy_threshold=50 而已。
-                # 这几个权重都在 config.scoring 里，谁把 time_weight 从 1.5 调到
-                # 4.0，门立刻就漏，而且是静默地漏：不报错、不变慢，只是开始返回
-                # "最近、很重要、但跟你问的完全无关"的记忆。
-                #
-                # 对的形状是把召回与排序分开：
-                #     门：  max(topic, bm25, semantic) >= 门槛   ← 只有相关性维度能开门
-                #     排序：现在这套七维加权分                    ← 后四维在这里发挥作用
-                # 一条相关的记忆因为更新、更重要而排前面完全合理；但它不该因为
-                # 新和重要就变得"相关"。
-                #
-                # 没有立刻改，是因为当前没有故障、且这是召回主路径；真要动需要先
-                # 攒一批带标准答案的查询（"我问了什么、期望返回什么"），否则无法
-                # 验证新门是不是把该召回的挡在了外面。见 docs/INTERNALS.md §3.1。
                 text_match = normalized >= self.fuzzy_threshold or literal_hit
                 semantic_match = (
                     semantic_score is not None

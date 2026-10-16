@@ -902,7 +902,14 @@ async def _merge_or_create_inner(
     exact_storage_match = False
     _LAST_MERGE_CANDIDATES.set([])
     try:
-        existing = await rt.bucket_mgr.search(content, limit=5, domain_filter=domain or None)
+        try:
+            existing = await rt.bucket_mgr.search(
+                content, limit=5, domain_filter=domain or None, relevance_only=True
+            )
+        except TypeError:
+            existing = await rt.bucket_mgr.search(
+                content, limit=5, domain_filter=domain or None
+            )
         _LAST_MERGE_CANDIDATES.set(list(existing or []))
     except Exception as e:
         rt.logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
@@ -966,6 +973,17 @@ async def _merge_or_create_inner(
                         break
                     snapshot_content = str(bucket.get("content") or "")
                     snapshot_metadata = deepcopy(metadata)
+
+                    # 保护：防止单桶无限追加膨胀成“黑洞吸积盘”
+                    if raw_merge and not exact_storage_match:
+                        append_count = snapshot_content.count("\n\n---\n")
+                        if append_count >= 4 or len(snapshot_content) >= 3000:
+                            rt.logger.info(
+                                "op=merge_or_create phase=branch branch=sponge_limit "
+                                f"bucket_id={candidate_id} appends={append_count} "
+                                f"len={len(snapshot_content)}"
+                            )
+                            break
 
                     if not exact_storage_match:
                         judge = getattr(rt.dehydrator, "judge_same_event", None)
@@ -1033,7 +1051,8 @@ async def _merge_or_create_inner(
                         "valence": merged_valence,
                         "arousal": merged_arousal,
                     }
-                    if title:
+                    # 只有旧桶尚未设置有效标题时才补充，合并绝不覆盖已有标题和名称
+                    if title and not str(metadata.get("title") or "").strip():
                         update_kwargs["title"] = title
                         old_name = str(metadata.get("name") or "")
                         timestamp_prefix = old_name[:19]
