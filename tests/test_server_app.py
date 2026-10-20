@@ -20,6 +20,7 @@ from server_app import (
     NgrokHeaderMiddleware,
     OriginCSRFGuardMiddleware,
     RuntimeLifecycle,
+    SSEKeepaliveMiddleware,
     build_http_app,
     install_runtime_lifespan,
 )
@@ -187,6 +188,127 @@ async def test_json_accept_shim_preserves_explicit_or_non_mcp_accept(path, accep
     await middleware(scope, _empty_receive, _discard_send)
 
     assert downstream.scopes[0] is scope
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_sends_comment_frames_on_idle_stream():
+    """GET /mcp 的通知流空闲时必须有字节流动，否则客户端会判定掉线。"""
+
+    class IdleSSEApp:
+        async def __call__(self, scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"text/event-stream; charset=utf-8")
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"event: message\ndata: {}\n\n",
+                    "more_body": True,
+                }
+            )
+            await asyncio.sleep(0.12)
+            await send(
+                {"type": "http.response.body", "body": b"", "more_body": False}
+            )
+
+    messages = []
+    middleware = SSEKeepaliveMiddleware(IdleSSEApp(), interval_seconds=0.02)
+
+    await middleware(
+        {"type": "http", "path": "/mcp", "headers": []},
+        _empty_receive,
+        _collect_into(messages),
+    )
+
+    comments = [
+        message
+        for message in messages
+        if message.get("type") == "http.response.body"
+        and message.get("body") == b": keepalive\n\n"
+    ]
+    assert comments, "空闲 SSE 流没有收到任何注释保活帧"
+    assert all(message["more_body"] is True for message in comments)
+    # 终止帧必须留在最后：注释不能写在响应结束之后。
+    assert messages[-1] == {
+        "type": "http.response.body",
+        "body": b"",
+        "more_body": False,
+    }
+
+    # 中间件返回后保活任务必须已经停掉，不能继续往已关闭的流里写。
+    seen = len(messages)
+    await asyncio.sleep(0.1)
+    assert len(messages) == seen
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_leaves_json_responses_alone():
+    class JsonApp:
+        async def __call__(self, scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await asyncio.sleep(0.08)
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"{}",
+                    "more_body": False,
+                }
+            )
+
+    messages = []
+    middleware = SSEKeepaliveMiddleware(JsonApp(), interval_seconds=0.02)
+
+    await middleware(
+        {"type": "http", "path": "/mcp", "headers": []},
+        _empty_receive,
+        _collect_into(messages),
+    )
+
+    assert [message["body"] for message in messages if "body" in message] == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_only_applies_to_mcp_paths():
+    """只有 /mcp 的 MCP 流需要这套保活，其他路由的 SSE 保持原样。"""
+
+    class SSEDownstream:
+        async def __call__(self, scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/event-stream")],
+                }
+            )
+            await asyncio.sleep(0.08)
+            await send(
+                {"type": "http.response.body", "body": b"", "more_body": False}
+            )
+
+    messages = []
+    middleware = SSEKeepaliveMiddleware(SSEDownstream(), interval_seconds=0.02)
+
+    await middleware(
+        {"type": "http", "path": "/api/other-stream", "headers": []},
+        _empty_receive,
+        _collect_into(messages),
+    )
+
+    assert not any(
+        message.get("body") == b": keepalive\n\n" for message in messages
+    )
 
 
 @pytest.mark.asyncio
@@ -1131,6 +1253,7 @@ def test_build_http_app_uses_the_managed_stack():
         "MCPAuthMiddleware",
         "NgrokHeaderMiddleware",
         "MCPJSONAcceptShim",
+        "SSEKeepaliveMiddleware",
     }
     csrf_middleware = next(
         item
@@ -1142,6 +1265,9 @@ def test_build_http_app_uses_the_managed_stack():
     assert middleware_order.index("CORSMiddleware") < middleware_order.index(
         "MCPAuthMiddleware"
     )
+    # SSE 保活要贴着 MCP 应用，才能在原始事件流上写注释；外层中间件只处理
+    # response.start，不该看到保活帧。
+    assert middleware_order[-1] == "SSEKeepaliveMiddleware"
     cors_middleware = next(
         item for item in app.user_middleware if item.cls.__name__ == "CORSMiddleware"
     )
