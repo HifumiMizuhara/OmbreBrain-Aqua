@@ -35,11 +35,6 @@ DEFAULT_MAX_MANAGEMENT_REQUEST_BYTES = 4 * 1024 * 1024
 DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS = 5.0
 DEFAULT_KEEPALIVE_INITIAL_DELAY_SECONDS = 10.0
 DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 60.0
-# SSE 注释保活间隔。sse-starlette 3.x 把 EventSourceResponse 的 ping 默认值
-# 改成了 None，而 FastMCP 构造它时没有显式传 ping——GET /mcp 的通知流因此可以
-# 长时间一个字节都不发。激进的 MCP 客户端会把这当成掉线并主动重连/报错。
-DEFAULT_SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0
-_SSE_KEEPALIVE_COMMENT = b": keepalive\n\n"
 
 TokenValidator = Callable[..., bool]
 AsyncCallback = Callable[[], Awaitable[Any]]
@@ -361,120 +356,55 @@ class MCPJSONAcceptShim:
         await self.app(scope, receive, send)
 
 
-class SSEKeepaliveMiddleware:
-    """在空闲的 SSE 流上周期性发送注释行，避免长连接被当成掉线。
+class MCPStandaloneSSEGuardMiddleware:
+    """拒绝 ``GET /mcp`` 的 standalone SSE 流。
 
-    背景：FastMCP 的 ``EventSourceResponse`` 没有显式设置 ``ping``，而
-    sse-starlette 3.x 已把该参数默认值从 15 秒改成 ``None``。于是
-    ``GET /mcp`` 的服务器通知流在无消息时完全静默，激进的 MCP 客户端（以及
-    中间代理的 idle timeout）会判定连接已死。SSE 规范允许以 ``:`` 开头的
-    注释行，客户端会忽略其内容，但 TCP/HTTP 层能看到字节流动，连接因此得以
-    续命。
+    生产 FastMCP 以 ``stateless_http=True`` + ``json_response=True`` 运行：
+    POST 已经是纯 JSON，服务端没有任何 server-initiated 消息，GET SSE 流不
+    承载业务数据。但 MCP 客户端仍会建立这条长连接，Cloudflare Tunnel 抖动时
+    它最先断，客户端重连失败就会把整个 MCP server 标记成掉线——而实际的工具
+    调用一直走的是 POST。
 
-    这里用 ASGI 中间件而不是给 SDK 打补丁：POST 工具调用的流式响应同样受益，
-    且不受 MCP SDK 内部实现变动影响。注释只写入 ``text/event-stream`` 响应；
-    发送与正常响应体共用一把锁，避免并发 ``send`` 把一条事件截成两半。
+    MCP 规范允许服务端不提供 SSE 时返回 405。Antigravity 1.4.3 实测收到 405
+    后会继续使用 POST，工具调用不受影响。外层 ``MCPAuthMiddleware`` 仍然先
+    执行，未认证请求不会因为这里返回 405 而绕过鉴权。
     """
 
     def __init__(
         self,
         app: Any,
         *,
-        interval_seconds: float = DEFAULT_SSE_KEEPALIVE_INTERVAL_SECONDS,
         path_matcher: Callable[[object], bool] = is_mcp_endpoint_path,
     ) -> None:
         self.app = app
-        try:
-            interval = float(interval_seconds)
-        except (TypeError, ValueError):
-            interval = DEFAULT_SSE_KEEPALIVE_INTERVAL_SECONDS
-        # 生产默认 15 秒；这里只挡住 0/负数，测试可以传很小的值。
-        self.interval_seconds = (
-            interval if interval > 0 else DEFAULT_SSE_KEEPALIVE_INTERVAL_SECONDS
-        )
         self.path_matcher = path_matcher
 
-    @staticmethod
-    def _is_event_stream(headers: Any) -> bool:
-        for key, value in headers or ():
-            try:
-                name = key.decode("latin-1") if isinstance(key, bytes) else str(key)
-                raw = value.decode("latin-1") if isinstance(value, bytes) else str(value)
-            except (AttributeError, UnicodeError):
-                continue
-            if name.strip().lower() == "content-type":
-                media_type = raw.split(";", 1)[0].strip().lower()
-                return media_type == "text/event-stream"
-        return False
-
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope.get("type") != "http" or not self.path_matcher(
-            scope.get("path")
+        if (
+            scope.get("type") == "http"
+            and str(scope.get("method", "")).upper() == "GET"
+            and self.path_matcher(scope.get("path"))
         ):
-            await self.app(scope, receive, send)
+            body = json.dumps(
+                {"error": "Standalone SSE stream is not supported; use POST"},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 405,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"allow", b"POST, DELETE, OPTIONS"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send(
+                {"type": "http.response.body", "body": body, "more_body": False}
+            )
             return
-
-        send_lock = asyncio.Lock()
-        finished = False
-        keepalive_task: asyncio.Task | None = None
-
-        async def send_keepalive() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(self.interval_seconds)
-                    async with send_lock:
-                        if finished:
-                            return
-                        await send(
-                            {
-                                "type": "http.response.body",
-                                "body": _SSE_KEEPALIVE_COMMENT,
-                                "more_body": True,
-                            }
-                        )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # 客户端断开/服务器关停时 send 会抛错；静默结束即可，
-                # 真正的收尾由 EventSourceResponse 自己负责。
-                return
-
-        async def send_with_keepalive(message: dict) -> None:
-            nonlocal finished, keepalive_task
-            if message.get("type") == "http.response.start":
-                if keepalive_task is None and self._is_event_stream(
-                    message.get("headers")
-                ):
-                    keepalive_task = asyncio.create_task(
-                        send_keepalive(),
-                        name="ombre-sse-keepalive",
-                    )
-            elif message.get("type") == "http.response.body" and not message.get(
-                "more_body", False
-            ):
-                finished = True
-                task = keepalive_task
-                keepalive_task = None
-                if task is not None:
-                    task.cancel()
-
-            async with send_lock:
-                await send(message)
-
-        try:
-            await self.app(scope, receive, send_with_keepalive)
-        finally:
-            finished = True
-            task = keepalive_task
-            keepalive_task = None
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
+        await self.app(scope, receive, send)
 
 
 class OriginCSRFGuardMiddleware:
@@ -823,12 +753,19 @@ def build_http_app(
 
     # 3.4.0 起只有一个连接器，`install_extra_connector`（并入 /mcp-extra 的路由
     # 与 session manager 生命周期）随之删除。
-    # SSE 保活必须最贴近 MCP 应用：它是唯一直接向响应流写注释的中间件，
-    # 让外层的鉴权/CORS/安全头只处理 response.start。
-    app.add_middleware(
-        SSEKeepaliveMiddleware,
-        path_matcher=mcp_path_matcher,
-    )
+    #
+    # 生产固定 stateless_http + json_response：POST 已是纯 JSON，GET /mcp 的
+    # standalone SSE 没有业务数据，却会在 Cloudflare Tunnel 抖动时成为断线
+    # 故障点。只在两者同时成立时关掉它；未来若切到有状态/SSE 模式，SSE 保持
+    # 可用。守卫放在鉴权内侧，未认证的 GET 仍由外层 MCPAuthMiddleware 返回 401。
+    mcp_settings = getattr(mcp, "settings", None)
+    if bool(getattr(mcp_settings, "stateless_http", False)) and bool(
+        getattr(mcp_settings, "json_response", False)
+    ):
+        app.add_middleware(
+            MCPStandaloneSSEGuardMiddleware,
+            path_matcher=mcp_path_matcher,
+        )
     install_runtime_lifespan(app, lifecycle)
     app.add_middleware(
         OriginCSRFGuardMiddleware,

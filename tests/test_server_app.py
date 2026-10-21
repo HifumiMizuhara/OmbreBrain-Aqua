@@ -20,7 +20,7 @@ from server_app import (
     NgrokHeaderMiddleware,
     OriginCSRFGuardMiddleware,
     RuntimeLifecycle,
-    SSEKeepaliveMiddleware,
+    MCPStandaloneSSEGuardMiddleware,
     build_http_app,
     install_runtime_lifespan,
 )
@@ -191,124 +191,93 @@ async def test_json_accept_shim_preserves_explicit_or_non_mcp_accept(path, accep
 
 
 @pytest.mark.asyncio
-async def test_sse_keepalive_sends_comment_frames_on_idle_stream():
-    """GET /mcp 的通知流空闲时必须有字节流动，否则客户端会判定掉线。"""
+async def test_standalone_sse_guard_rejects_get_mcp():
+    """stateless JSON 模式下不提供 SSE 流，GET /mcp 必须明确返回 405。
 
-    class IdleSSEApp:
-        async def __call__(self, scope, receive, send):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [
-                        (b"content-type", b"text/event-stream; charset=utf-8")
-                    ],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": b"event: message\ndata: {}\n\n",
-                    "more_body": True,
-                }
-            )
-            await asyncio.sleep(0.12)
-            await send(
-                {"type": "http.response.body", "body": b"", "more_body": False}
-            )
+    Antigravity 1.4.3 实测收到 405 后会继续用 POST；如果这里落回 FastMCP 的
+    SSE 长连接，Cloudflare Tunnel 一抖客户端就会把整个 MCP server 标记成掉线。
+    """
 
+    downstream = RecordingASGIApp()
+    middleware = MCPStandaloneSSEGuardMiddleware(downstream)
     messages = []
-    middleware = SSEKeepaliveMiddleware(IdleSSEApp(), interval_seconds=0.02)
 
     await middleware(
-        {"type": "http", "path": "/mcp", "headers": []},
+        {"type": "http", "method": "GET", "path": "/mcp", "headers": []},
         _empty_receive,
         _collect_into(messages),
     )
 
-    comments = [
-        message
-        for message in messages
-        if message.get("type") == "http.response.body"
-        and message.get("body") == b": keepalive\n\n"
-    ]
-    assert comments, "空闲 SSE 流没有收到任何注释保活帧"
-    assert all(message["more_body"] is True for message in comments)
-    # 终止帧必须留在最后：注释不能写在响应结束之后。
-    assert messages[-1] == {
-        "type": "http.response.body",
-        "body": b"",
-        "more_body": False,
-    }
-
-    # 中间件返回后保活任务必须已经停掉，不能继续往已关闭的流里写。
-    seen = len(messages)
-    await asyncio.sleep(0.1)
-    assert len(messages) == seen
+    assert downstream.scopes == [], "守卫必须直接短路，不能落到 FastMCP 的 SSE 处理器"
+    start = messages[0]
+    assert start["status"] == 405
+    headers = dict(start["headers"])
+    assert headers[b"allow"] == b"POST, DELETE, OPTIONS"
+    assert headers[b"content-type"] == b"application/json"
+    assert json.loads(messages[1]["body"])["error"]
 
 
 @pytest.mark.asyncio
-async def test_sse_keepalive_leaves_json_responses_alone():
-    class JsonApp:
-        async def __call__(self, scope, receive, send):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"application/json")],
-                }
-            )
-            await asyncio.sleep(0.08)
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": b"{}",
-                    "more_body": False,
-                }
-            )
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/mcp"),
+        ("DELETE", "/mcp"),
+        ("GET", "/health"),
+        ("GET", "/mcp-extra"),
+    ],
+)
+async def test_standalone_sse_guard_passes_other_requests(method, path):
+    downstream = RecordingASGIApp()
+    middleware = MCPStandaloneSSEGuardMiddleware(downstream)
+    scope = {"type": "http", "method": method, "path": path, "headers": []}
 
-    messages = []
-    middleware = SSEKeepaliveMiddleware(JsonApp(), interval_seconds=0.02)
+    await middleware(scope, _empty_receive, _discard_send)
 
-    await middleware(
-        {"type": "http", "path": "/mcp", "headers": []},
-        _empty_receive,
-        _collect_into(messages),
-    )
-
-    assert [message["body"] for message in messages if "body" in message] == [b"{}"]
+    assert downstream.scopes == [scope]
 
 
 @pytest.mark.asyncio
-async def test_sse_keepalive_only_applies_to_mcp_paths():
-    """只有 /mcp 的 MCP 流需要这套保活，其他路由的 SSE 保持原样。"""
+async def test_standalone_sse_guard_ignores_non_http_scopes():
+    downstream = RecordingASGIApp()
+    middleware = MCPStandaloneSSEGuardMiddleware(downstream)
+    scope = {"type": "lifespan"}
 
-    class SSEDownstream:
-        async def __call__(self, scope, receive, send):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/event-stream")],
-                }
-            )
-            await asyncio.sleep(0.08)
-            await send(
-                {"type": "http.response.body", "body": b"", "more_body": False}
-            )
+    await middleware(scope, _empty_receive, _discard_send)
 
+    assert downstream.scopes == [scope]
+
+
+@pytest.mark.asyncio
+async def test_standalone_sse_guard_does_not_bypass_token_auth():
+    """守卫在鉴权内侧：未认证的 GET 仍必须是 401，不能先拿到 405。"""
+
+    class FakeMCP:
+        settings = SimpleNamespace(stateless_http=True, json_response=True)
+
+        def streamable_http_app(self):
+            return Starlette()
+
+    app = build_http_app(
+        FakeMCP(),
+        "streamable-http",
+        settings=HTTPRuntimeSettings(
+            auth_required=True,
+            max_request_bytes=2048,
+            auth_mode="token",
+        ),
+        token_validator=lambda *_args, **_kwargs: False,
+        lifecycle=RuntimeLifecycle(logger=RecordingLogger()),
+    )
     messages = []
-    middleware = SSEKeepaliveMiddleware(SSEDownstream(), interval_seconds=0.02)
 
-    await middleware(
-        {"type": "http", "path": "/api/other-stream", "headers": []},
+    await app(
+        {"type": "http", "method": "GET", "path": "/mcp", "headers": []},
         _empty_receive,
         _collect_into(messages),
     )
 
-    assert not any(
-        message.get("body") == b": keepalive\n\n" for message in messages
-    )
+    assert messages[0]["status"] == 401
 
 
 @pytest.mark.asyncio
@@ -366,6 +335,45 @@ def test_extra_connector_route_is_gone():
     assert "/mcp-extra" not in paths
     assert not is_mcp_endpoint_path("/mcp-extra")
     assert is_mcp_endpoint_path("/mcp")
+
+
+@pytest.mark.asyncio
+async def test_real_stateless_app_rejects_standalone_sse():
+    """真实 server.mcp 的 stateless/json 设置必须触发 405 守卫。"""
+
+    import server
+
+    app = build_http_app(
+        server.mcp,
+        "streamable-http",
+        settings=HTTPRuntimeSettings(
+            auth_required=False,
+            max_request_bytes=DEFAULT_MAX_MCP_REQUEST_BYTES,
+        ),
+        token_validator=lambda *_args, **_kwargs: False,
+        lifecycle=RuntimeLifecycle(logger=RecordingLogger()),
+    )
+    messages = []
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "scheme": "http",
+        "method": "GET",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "server": ("localhost", 18001),
+        "client": ("127.0.0.1", 50000),
+        "headers": [
+            (b"host", b"localhost:18001"),
+            (b"accept", b"text/event-stream"),
+        ],
+    }
+
+    await app(scope, _empty_receive, _collect_into(messages))
+
+    assert messages[0]["status"] == 405
+    assert (b"allow", b"POST, DELETE, OPTIONS") in messages[0]["headers"]
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1234,8 @@ async def test_runtime_lifespan_composes_with_parent_lifespan():
 
 def test_build_http_app_uses_the_managed_stack():
     class FakeMCP:
+        settings = SimpleNamespace(stateless_http=True, json_response=True)
+
         def streamable_http_app(self):
             return Starlette()
 
@@ -1253,7 +1263,7 @@ def test_build_http_app_uses_the_managed_stack():
         "MCPAuthMiddleware",
         "NgrokHeaderMiddleware",
         "MCPJSONAcceptShim",
-        "SSEKeepaliveMiddleware",
+        "MCPStandaloneSSEGuardMiddleware",
     }
     csrf_middleware = next(
         item
@@ -1265,9 +1275,9 @@ def test_build_http_app_uses_the_managed_stack():
     assert middleware_order.index("CORSMiddleware") < middleware_order.index(
         "MCPAuthMiddleware"
     )
-    # SSE 保活要贴着 MCP 应用，才能在原始事件流上写注释；外层中间件只处理
-    # response.start，不该看到保活帧。
-    assert middleware_order[-1] == "SSEKeepaliveMiddleware"
+    # 守卫要贴着 MCP 应用，并在外层 MCPAuthMiddleware 之内；这样未认证的
+    # GET 先拿到 401，而不是被守卫短路成 405。
+    assert middleware_order[-1] == "MCPStandaloneSSEGuardMiddleware"
     cors_middleware = next(
         item for item in app.user_middleware if item.cls.__name__ == "CORSMiddleware"
     )
@@ -1278,6 +1288,32 @@ def test_build_http_app_uses_the_managed_stack():
     }
     assert app.state.ombre_http_settings is settings
     assert app.state.ombre_runtime_lifecycle is lifecycle
+
+
+@pytest.mark.asyncio
+async def test_build_http_app_keeps_sse_for_non_stateless_modes():
+    """只有 stateless + json_response 才关 SSE；有状态模式保持原有能力。"""
+
+    class StatefulMCP:
+        settings = SimpleNamespace(stateless_http=False, json_response=False)
+
+        def streamable_http_app(self):
+            return Starlette()
+
+    app = build_http_app(
+        StatefulMCP(),
+        "streamable-http",
+        settings=HTTPRuntimeSettings(
+            auth_required=False,
+            max_request_bytes=2048,
+        ),
+        token_validator=lambda *_args, **_kwargs: False,
+        lifecycle=RuntimeLifecycle(logger=RecordingLogger()),
+    )
+
+    assert "MCPStandaloneSSEGuardMiddleware" not in {
+        item.cls.__name__ for item in app.user_middleware
+    }
 
 
 @pytest.mark.asyncio
