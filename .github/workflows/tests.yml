@@ -35,12 +35,14 @@ jobs:
         # 固定到当前发布锁首次生成时的索引快照；升级依赖时需显式推进并重生成两份锁。
         # 2026-08-09：推进到 2026-08-01，只为吃到 cryptography 50.0.0（修复 PYSEC-2026-3552）。
         # 2026-10-10：推进到 2026-10-01，获取 pyjwt 2.15.1（修复 PYSEC-2026-4140~4183 审计漏洞）。
+        # 2026-10-21：只把 certifi 的候选截止日单独放宽到 2026-10-21，更新到 2026.10.19
+        #             （修复 PYSEC-2026-4320）；其余依赖仍停在 2026-10-01。
         env:
           UV_EXCLUDE_NEWER: '2026-10-01T00:00:00Z'
         run: |
           rm -f requirements.lock.txt requirements-dev.lock.txt
-          uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes --output-file requirements.lock.txt
-          uv pip compile requirements-dev.in --universal --python-version 3.12 --generate-hashes --output-file requirements-dev.lock.txt
+          uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes --exclude-newer-package certifi=2026-10-21 --output-file requirements.lock.txt
+          uv pip compile requirements-dev.in --universal --python-version 3.12 --generate-hashes --exclude-newer-package certifi=2026-10-21 --output-file requirements-dev.lock.txt
           git diff --exit-code -- requirements.lock.txt requirements-dev.lock.txt
 
       - name: Install locked dependencies

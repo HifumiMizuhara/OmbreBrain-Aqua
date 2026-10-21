@@ -98,9 +98,12 @@ def test_ci_lock_verification_freezes_package_index_snapshot():
 
     assert step.count("uv pip compile ") == 2
     assert "--upgrade" not in step
-    assert "--exclude-newer" not in step, (
-        "cutoff 必须通过环境变量传入，避免 uv 把参数写进 lock 头部造成纯文本漂移"
-    )
+    # 全局 cutoff 必须走环境变量，避免 uv 把参数写进 lock 头部造成纯文本漂移。
+    # 只允许对 certifi 使用显式的单包放宽；这是为了吃到晚于快照的安全修复，
+    # 且必须同时存在于两条 compile 命令里。
+    assert "--exclude-newer " not in step
+    overrides = re.findall(r"--exclude-newer-package\s+(\S+)", step)
+    assert overrides == ["certifi=2026-10-21", "certifi=2026-10-21"]
     reset_command = "rm -f requirements.lock.txt requirements-dev.lock.txt"
     assert reset_command in step, "lock 校验必须从空输出重建，不能依赖已有 pin 偏好"
     assert step.index(reset_command) < step.index("uv pip compile ")
@@ -146,13 +149,18 @@ def test_legacy_archive_compatibility_requires_284_release_lock():
     配 America/New_York 的用户拿到东八区的解锁时间，且没有任何提示。
     2026-10-10（3.9.2）：修复 pyjwt==2.13.0 安全漏洞（PYSEC-2026-4140~4183），
     推进 UV_EXCLUDE_NEWER 到 2026-10-01，升级 pyjwt==2.15.1 及 mcp==1.30.0 等。
+    2026-10-21（3.9.9）：只把 certifi 从 2026.7.22 升到 2026.10.19（PYSEC-2026-4320）。
+    评估结论：这是单包升级，解析树唯一变化是叶子包 certifi 本身，其它包版本一个未动；
+    certifi 只提供 CA 证书，不参与任何依赖约束。CI 仅对 certifi 把候选截止日放宽到
+    2026-10-21，全局快照仍是 2026-10-01。生产暂未部署该版本，旧热更新器的依赖变更
+    路径不受额外影响。
     """
     repo_root = Path(meta.__file__).resolve().parents[2]
     lock_bytes = (repo_root / "requirements.lock.txt").read_bytes()
     normalized = lock_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
     assert hashlib.sha256(normalized).hexdigest() == (
-        "d8d3e62c0ebc0a5740974471c37a95622554730bea6d7d64123f1bbfe592f20f"
+        "d828eae674a778a69fdfd73c73938f3453062d9c1d631e6e34e87b980de34561"
     ), (
         "requirements.lock.txt 已变化：确认这次变化是否会影响还没升级过的旧版"
         "热更新器（尤其 v2.8.4 之前、缺少 lock 感知回退逻辑的实例），评估后再把"
