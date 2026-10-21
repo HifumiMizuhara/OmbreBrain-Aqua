@@ -304,9 +304,8 @@ def test_desktop_management_api_first_run_and_authenticated_flow():
         # 要的就是 404。3.2.0–3.3.0 期间它是信件连接器，那时 GET 拿的是 406
         # （streamable-http 只接受 POST + JSON Accept）。
         assert client.get("/mcp-extra").status_code == 404
-        # 主连接器仍在；stateless JSON 模式不提供 standalone SSE，GET 明确
-        # 返回 405 而不是开一条没有业务数据的长连接。
-        assert client.get("/mcp").status_code == 405
+        # 主连接器仍在，GET 拿 406 而不是 404
+        assert client.get("/mcp").status_code == 406
 
         invalid_transport = client.post(
             "/api/transport",
